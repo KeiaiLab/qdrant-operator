@@ -8,8 +8,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const P2PPort = 6335
-
 func initScript(qc *qdrantv1alpha1.QdrantCluster) string {
 	seed := fmt.Sprintf("http://%s-0.%s:%d", Name(qc), HeadlessName(qc), P2PPort)
 	return fmt.Sprintf(`#!/bin/sh
