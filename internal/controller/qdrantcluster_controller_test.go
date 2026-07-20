@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -349,5 +350,31 @@ var _ = Describe("QdrantCluster scale-in drain (B-4)", func() {
 			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "dr4", Namespace: "default"}, fetched)
 			return fetched.Status.DrainStatus == nil && fetched.Status.Phase == "Running"
 		}, "20s", "250ms").Should(BeTrue(), "정상 경로 복귀 시 DrainStatus=nil + Running")
+	})
+})
+
+var _ = Describe("QdrantCluster scale subresource (KEDA 연동)", func() {
+	// KEDA ScaledObject 는 /scale 을 정의한 CR 만 스케일할 수 있다 — 설계 keda-autoscale §오퍼레이터 변경.
+	It("/scale 로 replicas·selector 를 노출하고 변경을 spec 에 반영한다", func() {
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "sc1", Namespace: "default"}}
+		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+
+		// GET /scale — 컨트롤러 reconcileStatus 가 status.selector 를 채운 뒤부터 selector 노출.
+		scale := &autoscalingv1.Scale{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.SubResource("scale").Get(ctx, qc, scale)).To(Succeed())
+			g.Expect(scale.Status.Selector).NotTo(BeEmpty())
+		}, "10s", "250ms").Should(Succeed())
+		Expect(scale.Spec.Replicas).To(Equal(int32(1)))
+		Expect(scale.Status.Selector).To(ContainSubstring("app.kubernetes.io/instance=sc1"))
+
+		// PUT /scale — KEDA/HPA 가 쓰는 경로 그대로 replicas 를 2 로 올리면 spec 에 반영된다.
+		scale.Spec.Replicas = 2
+		Expect(k8sClient.SubResource("scale").Update(ctx, qc, client.WithSubResourceBody(scale))).To(Succeed())
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Eventually(func() int32 {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "sc1", Namespace: "default"}, fetched)
+			return fetched.Spec.Replicas
+		}, "5s", "250ms").Should(Equal(int32(2)))
 	})
 })

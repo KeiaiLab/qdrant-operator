@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -191,6 +192,8 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	statusBefore := *qc.Status.DeepCopy()
 	qc.Status.Replicas = live.Status.Replicas
 	qc.Status.ReadyReplicas = live.Status.ReadyReplicas
+	// scale subresource selectorpath — KEDA/HPA 의 Resource 트리거 파드 발견용 (설계 §오퍼레이터 변경).
+	qc.Status.Selector = labels.Set(resources.SelectorLabels(qc)).String()
 	qc.Status.ObservedGeneration = qc.Generation
 	// 정상(비-축소) 경로 진입 = 드레인 없음 — 정상 완료와 목표 상향 abort 를 이 한 지점이 흡수(R1-6).
 	qc.Status.DrainStatus = nil

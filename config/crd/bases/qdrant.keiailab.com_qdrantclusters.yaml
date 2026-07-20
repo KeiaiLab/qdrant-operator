@@ -1308,6 +1308,12 @@ spec:
               replicas:
                 format: int32
                 type: integer
+              selector:
+                description: |-
+                  scale subresource 의 selectorpath 대상 — SelectorLabels 의 label-selector 직렬화.
+                  prometheus(External) 트리거는 불요하지만 Resource(cpu/memory) 트리거의 HPA 파드
+                  발견에 필수라 항상 채운다 (KEDA 연동 설계 §오퍼레이터 변경).
+                type: string
               shardDistribution:
                 description: |-
                   B-2 관측: 컬렉션별 peer 간 shard 분포. Running 상태에서 주기 갱신되며, steady-state
@@ -1349,4 +1355,8 @@ spec:
     served: true
     storage: true
     subresources:
+      scale:
+        labelSelectorPath: .status.selector
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.readyReplicas
       status: {}

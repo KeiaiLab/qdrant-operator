@@ -183,6 +183,12 @@ type QdrantClusterStatus struct {
 	// +optional
 	DrainStatus *DrainStatus `json:"drainStatus,omitempty"`
 
+	// scale subresource 의 selectorpath 대상 — SelectorLabels 의 label-selector 직렬화.
+	// prometheus(External) 트리거는 불요하지만 Resource(cpu/memory) 트리거의 HPA 파드
+	// 발견에 필수라 항상 채운다 (KEDA 연동 설계 §오퍼레이터 변경).
+	// +optional
+	Selector string `json:"selector,omitempty"`
+
 	// conditions represent the current state of the QdrantCluster resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
@@ -202,6 +208,7 @@ type QdrantClusterStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.readyReplicas,selectorpath=.status.selector
 
 // QdrantCluster is the Schema for the qdrantclusters API
 type QdrantCluster struct {
