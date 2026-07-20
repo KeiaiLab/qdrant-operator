@@ -50,13 +50,18 @@ type plannedMove struct {
 	ShardID    uint32
 	From       uint64
 	To         uint64
+	// Drop=true 면 목적지 없는 잉여 복제본 드롭(drop_replica) — B-4 드레인 전용.
+	Drop bool
 	// 정렬 키 스냅샷(후보 생성 시점의 donor/recipient shard 수)
 	fromCount int
 	toCount   int
 }
 
-// String 은 status.plannedMoves 표기("collection/shard: from->to").
+// String 은 status 표기 — 이동 "coll/shard: from->to", 드롭 "coll/shard: drop@peer".
 func (m plannedMove) String() string {
+	if m.Drop {
+		return fmt.Sprintf("%s/%d: drop@%d", m.Collection, m.ShardID, m.From)
+	}
 	return fmt.Sprintf("%s/%d: %d->%d", m.Collection, m.ShardID, m.From, m.To)
 }
 
@@ -91,11 +96,21 @@ func (o *observation) allShardsActive() bool {
 // ── B-3 executor — 관측 게이트 → 완료/유실 판정 → 계획 선노출 → 동시 1건 발행 ──
 
 const (
-	// moveAppearDeadline: MoveShard 200(raft 커밋) 후 이동이 관측(transfer 또는 배치 변화)에
-	// 나타나야 하는 기한 — 초과 시 lost-command 로 판정한다.
-	moveAppearDeadline = 60 * time.Second
-	phaseRebalancing   = "Rebalancing"
+	// moveAppearDeadline: 발행(raft 커밋) 후 이동/드롭이 관측에 나타나야 하는 기한 —
+	// 초과 시 lost-command 로 판정한다.
+	moveAppearDeadline  = 60 * time.Second
+	moveBaseBackoff     = 30 * time.Second
+	moveMaxBackoff      = 10 * time.Minute
+	moveMaxBackoffShift = 5 // 30s<<5=16m > 10m 상한 — 이 이상 지수는 무의미(wrap 방지 clamp)
+	phaseRebalancing    = "Rebalancing"
+	// settleActiveMove 반환 상태
+	settleBusy         = "busy"
+	settleWaiting      = "waiting"
+	settleLost         = "lost"
+	settleSettled      = "settled"
+	reasonDrainBlocked = "DrainBlocked"
 	phaseRunning       = "Running"
+	phaseDraining      = "Draining"
 	shardStateActive   = "Active"
 )
 
@@ -104,18 +119,38 @@ func rebalanceEnabled(qc *qdrantv1alpha1.QdrantCluster) bool {
 	return qc.Spec.Rebalance == nil || qc.Spec.Rebalance.Enabled == nil || *qc.Spec.Rebalance.Enabled
 }
 
-// moveCompleted — move 시맨틱(완료 후 source 삭제) 기준: to 가 해당 shard 를 Active 로
-// 보유하고 from 이 더는 보유하지 않을 때만 완료.
-func moveCompleted(obs *observation, cm *qdrantv1alpha1.RebalanceMoveStatus) bool {
-	cc, ok := obs.Collections[cm.Collection]
+// backoff 는 유실/실패 연속 횟수 level 의 재큐 지연 — 지수이되 상한·비음수 보장.
+// shift clamp(5) + wrap 방어로 level 무한 증가에도 항상 (0, 10m] 이다(hot-loop 차단).
+func backoff(level int32) time.Duration {
+	exp := min(max(level-1, 0), moveMaxBackoffShift)
+	d := min(moveBaseBackoff<<uint(exp), moveMaxBackoff)
+	if d <= 0 { // int64 wrap 방어(이론상 도달 불가 — clamp 가 선행)
+		d = moveMaxBackoff
+	}
+	return d
+}
+
+// activeMoveCompleted 는 move/drop 각각의 완료를 관측 기반으로 판정한다 — drop 이
+// shard_transfers 에 나타나는지는 미검증 영역이라 배치 관측만 신뢰한다.
+func activeMoveCompleted(obs *observation, am *qdrantv1alpha1.MoveStatus) bool {
+	cc, ok := obs.Collections[am.Collection]
 	if !ok {
 		return false
 	}
-	from, _ := strconv.ParseUint(cm.FromPeer, 10, 64)
-	to, _ := strconv.ParseUint(cm.ToPeer, 10, 64)
+	from, _ := strconv.ParseUint(am.FromPeer, 10, 64)
+	if am.Drop {
+		// 드롭 완료 = source 가 더는 그 shard 를 보유하지 않음.
+		for _, s := range cc.Shards {
+			if int32(s.ShardID) == am.ShardID && s.PeerID == from {
+				return false
+			}
+		}
+		return true
+	}
+	to, _ := strconv.ParseUint(am.ToPeer, 10, 64)
 	var toActive, fromHolds bool
 	for _, s := range cc.Shards {
-		if int32(s.ShardID) != cm.ShardID {
+		if int32(s.ShardID) != am.ShardID {
 			continue
 		}
 		if s.PeerID == to && s.State == shardStateActive {
@@ -128,45 +163,93 @@ func moveCompleted(obs *observation, cm *qdrantv1alpha1.RebalanceMoveStatus) boo
 	return toActive && !fromHolds
 }
 
-// reconcileRebalance 는 ready(전 replica 준비 + peer 합류 완료) 상태의 최종 status writer.
-// 반환: (phase, requeue) — 호출자가 phase 를 반영하고 Status().Update 후 requeue 한다.
-func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster, obs *observation, qcl qdrant.Client) (string, time.Duration) {
-	// 1) 진행 중 전송 — 새 발행 금지, 완료 폴링만 (동시 1건은 오퍼레이터 메모리가 아니라
-	//    Qdrant 관측으로 강제되어 재시작·리더 전환에도 유지된다).
+// settleActiveMove — 재배치·드레인 공통 정산. 반환 state:
+//
+//	busy    — 전역 transfer in-flight: 새 발행 금지, 폴링
+//	waiting — 발행 후 출현창(60s) 내 미관측: 대기(재발행 금지)
+//	lost    — 유실 판정: 레코드를 nil 로 비워(★영구 정지 차단) 백오프 후 재계획 허용
+//	settled — 완료 정산 또는 추적 없음: 호출자가 계획 단계로 진행
+func (r *QdrantClusterReconciler) settleActiveMove(qc *qdrantv1alpha1.QdrantCluster, obs *observation) (string, time.Duration) {
 	if obs.transfersInFlight() > 0 {
-		return phaseRebalancing, 10 * time.Second
+		return settleBusy, 10 * time.Second
+	}
+	am := qc.Status.ActiveMove
+	if am == nil {
+		return settleSettled, 0
+	}
+	switch {
+	case activeMoveCompleted(obs, am):
+		qc.Status.ActiveMove = nil
+		qc.Status.MoveBackoff = 0
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionFalse, Reason: "MoveCompleted", Message: fmt.Sprintf("%s/%d 정산 완료", am.Collection, am.ShardID), ObservedGeneration: qc.Generation})
+		return settleSettled, 0
+	case am.IssuedAt != nil && time.Since(am.IssuedAt.Time) < moveAppearDeadline:
+		return settleWaiting, 5 * time.Second
+	default:
+		// lost-command — 레코드 전체를 비워 다음 cycle 이 반드시 재계획에 도달한다.
+		// escalation 은 스칼라 MoveBackoff 가 보존한다.
+		qc.Status.ActiveMove = nil
+		qc.Status.MoveBackoff++
+		d := backoff(qc.Status.MoveBackoff)
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: fmt.Sprintf("%s/%d 가 %s 내 관측되지 않음(lost-command) — %v 후 재계획", am.Collection, am.ShardID, moveAppearDeadline, d), ObservedGeneration: qc.Generation})
+		r.Recorder.Event(qc, corev1.EventTypeWarning, "MoveFailed", "이동/드롭 명령 유실 — 재계획 예정")
+		return settleLost, d
+	}
+}
+
+// issueActiveMove — 선노출(발행 전 status 커밋) 후 단일 발행. 즉시 실패도 유실과 동일하게
+// 레코드를 비워 stall 을 차단한다.
+func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster, mv plannedMove, kind string, qcl qdrant.Client) time.Duration {
+	now := metav1.Now()
+	qc.Status.ActiveMove = &qdrantv1alpha1.MoveStatus{
+		Kind: kind, Collection: mv.Collection, ShardID: int32(mv.ShardID),
+		FromPeer: strconv.FormatUint(mv.From, 10), Drop: mv.Drop, IssuedAt: &now,
+	}
+	if !mv.Drop {
+		qc.Status.ActiveMove.ToPeer = strconv.FormatUint(mv.To, 10)
+	}
+	if err := r.Status().Update(ctx, qc); err != nil {
+		return 5 * time.Second
+	}
+	var err error
+	if mv.Drop {
+		err = qcl.DropReplica(ctx, mv.Collection, mv.ShardID, mv.From)
+	} else {
+		err = qcl.MoveShard(ctx, mv.Collection, mv.ShardID, mv.From, mv.To)
+	}
+	if err != nil {
+		qc.Status.ActiveMove = nil
+		qc.Status.MoveBackoff++
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: err.Error(), ObservedGeneration: qc.Generation})
+		r.Recorder.Event(qc, corev1.EventTypeWarning, "MoveFailed", err.Error())
+		return backoff(qc.Status.MoveBackoff)
+	}
+	reason := "ShardMoveIssued"
+	if mv.Drop {
+		reason = "ReplicaDropIssued"
+	}
+	r.Recorder.Event(qc, corev1.EventTypeNormal, reason, mv.String())
+	return 10 * time.Second
+}
+
+// reconcileRebalance 는 ready(전 replica 준비 + peer 합류 완료) 상태의 최종 status writer.
+func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster, obs *observation, qcl qdrant.Client) (string, time.Duration) {
+	state, d := r.settleActiveMove(qc, obs)
+	switch state {
+	case settleBusy, settleWaiting, settleLost:
+		return phaseRebalancing, d
 	}
 
-	// 2) 발행 추적(CurrentMove) 정산 — transfers 는 비어 있다.
-	if cm := qc.Status.Rebalance; cm != nil {
-		switch {
-		case moveCompleted(obs, cm):
-			qc.Status.Rebalance = nil
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionFalse, Reason: "MoveCompleted", Message: fmt.Sprintf("%s/%d 이동 완료", cm.Collection, cm.ShardID), ObservedGeneration: qc.Generation})
-		case cm.IssuedAt != nil && time.Since(cm.IssuedAt.Time) < moveAppearDeadline:
-			// raft 커밋 직후 관측 반영 전 창 — 재발행 금지, 대기.
-			return phaseRebalancing, 5 * time.Second
-		default:
-			// lost-command — 백오프 후 재계획(다음 cycle 에서 신선 관측으로 재산출).
-			cm.FailureCount++
-			delay := min(30*time.Second*(1<<uint(cm.FailureCount-1)), 10*time.Minute)
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: fmt.Sprintf("%s/%d %s->%s 이동이 %s 내 관측되지 않음(lost-command) — %v 후 재계획", cm.Collection, cm.ShardID, cm.FromPeer, cm.ToPeer, moveAppearDeadline, delay), ObservedGeneration: qc.Generation})
-			r.Recorder.Event(qc, corev1.EventTypeWarning, "MoveFailed", "이동 명령 유실 — 재계획 예정")
-			cm.IssuedAt = nil // 다음 cycle 재계획 허용(FailureCount 는 백오프용으로 유지)
-			return phaseRebalancing, delay
-		}
-	}
-
-	// 3) 비-Active shard(전이 중) — 계획 보류.
+	// 비-Active shard(전이 중) — 계획 보류.
 	if !obs.allShardsActive() {
 		return phaseRebalancing, 10 * time.Second
 	}
 
-	// 4) 신선 재계획 + 선노출.
+	// 신선 재계획 + 선노출.
 	plan := planRebalance(obs)
 	qc.Status.PlannedMoves = nil
 	for i, mv := range plan {
-		if i >= 10 { // status 크기 상한 — 전체 계획이 아니라 앞 10건만 노출
+		if i >= 10 { // status 크기 상한
 			break
 		}
 		qc.Status.PlannedMoves = append(qc.Status.PlannedMoves, mv.String())
@@ -175,35 +258,9 @@ func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qd
 		return phaseRunning, 0 // 균형 — steady-state 무행동
 	}
 	if !rebalanceEnabled(qc) {
-		// dry-run: 계획만 노출, 발행 없음.
-		return phaseRunning, 2 * time.Minute
+		return phaseRunning, 2 * time.Minute // dry-run: 계획만 노출
 	}
-
-	// 5) 동시 1건 발행 — 선노출을 위해 발행 "전에" 추적 상태를 기록한다. 발행 실패 시
-	//    추적을 지워 다음 cycle 재계획.
-	mv := plan[0]
-	now := metav1.Now()
-	fc := int32(0)
-	if qc.Status.Rebalance != nil {
-		fc = qc.Status.Rebalance.FailureCount
-	}
-	qc.Status.Rebalance = &qdrantv1alpha1.RebalanceMoveStatus{
-		Collection: mv.Collection, ShardID: int32(mv.ShardID),
-		FromPeer: strconv.FormatUint(mv.From, 10), ToPeer: strconv.FormatUint(mv.To, 10),
-		IssuedAt: &now, FailureCount: fc,
-	}
-	if err := r.Status().Update(ctx, qc); err != nil {
-		return phaseRebalancing, 5 * time.Second
-	}
-	if err := qcl.MoveShard(ctx, mv.Collection, mv.ShardID, mv.From, mv.To); err != nil {
-		qc.Status.Rebalance.IssuedAt = nil
-		qc.Status.Rebalance.FailureCount++
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: err.Error(), ObservedGeneration: qc.Generation})
-		r.Recorder.Event(qc, corev1.EventTypeWarning, "MoveFailed", err.Error())
-		return phaseRebalancing, 30 * time.Second
-	}
-	r.Recorder.Event(qc, corev1.EventTypeNormal, "ShardMoveIssued", mv.String())
-	return phaseRebalancing, 10 * time.Second
+	return phaseRebalancing, r.issueActiveMove(ctx, qc, plan[0], "Rebalance", qcl)
 }
 
 // requeueOrNothing 은 phase 결과에 따른 ctrl.Result 조립 헬퍼.

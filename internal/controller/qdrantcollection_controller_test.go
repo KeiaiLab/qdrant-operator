@@ -41,7 +41,7 @@ func newCollectionCR(name string, shard uint32, onDelete qdrantv1alpha1.Collecti
 		Spec: qdrantv1alpha1.QdrantCollectionSpec{
 			ClusterRef:        collectionTestCluster,
 			Vectors:           qdrantv1alpha1.VectorsSpec{Size: 384, Distance: "Cosine"},
-			ShardNumber:       shard,
+			ShardNumber:       &shard,
 			ReplicationFactor: 1,
 			OnDelete:          onDelete,
 		},

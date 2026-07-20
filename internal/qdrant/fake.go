@@ -166,6 +166,25 @@ func (f *Fake) MoveShard(_ context.Context, collection string, shardID uint32, f
 	return nil
 }
 
+func (f *Fake) DropReplica(_ context.Context, collection string, shardID uint32, peerID uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["DropReplica"]; err != nil {
+		return err
+	}
+	pl, ok := f.Placement[collection]
+	if !ok {
+		return fmt.Errorf("collection %s not found", collection)
+	}
+	// 단일 복제본 모델(Placement=shard→peer 1개)에선 잉여 드롭이 존재하지 않는다 — 실서버
+	// 시맨틱(마지막 active replica 거부)을 모사해 항상 거부한다. RF>1 시뮬은 후속 확장.
+	if pl[shardID] == peerID {
+		return fmt.Errorf("shard %d 의 마지막 active replica(peer %d) — drop 거부", shardID, peerID)
+	}
+	f.Moves = append(f.Moves, fmt.Sprintf("%s/%d:drop@%d", collection, shardID, peerID))
+	return nil
+}
+
 func (f *Fake) RemovePeer(_ context.Context, peerID uint64, force bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -138,48 +138,6 @@ var _ = Describe("QdrantCluster Controller", func() {
 		})
 	})
 
-	Context("STS scale-down 거부 가드 (Task 10)", func() {
-		// 다른 It과 이름이 겹치면 envtest가 GC를 돌리지 않아 잔존 리소스와 순서 결합이
-		// 생기므로, 본 spec 전용 이름(sd10)으로 자기 완결 실행한다.
-		It("scale-down은 거부되고 STS replica는 유지된다", func() {
-			key := types.NamespacedName{Name: "sd10", Namespace: "default"}
-			qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
-			qc.Spec.Replicas = 3
-			Expect(k8sClient.Create(ctx, qc)).To(Succeed())
-
-			// 매니저의 최초 reconcile이 STS를 replicas=3으로 만들 때까지 대기 (수동 Reconcile 호출 금지 — 매니저와 경합 방지)
-			Eventually(func() int32 {
-				s := &appsv1.StatefulSet{}
-				_ = k8sClient.Get(ctx, key, s)
-				if s.Spec.Replicas == nil {
-					return 0
-				}
-				return *s.Spec.Replicas
-			}, "10s", "250ms").Should(Equal(int32(3)))
-
-			fetched := &qdrantv1alpha1.QdrantCluster{}
-			Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
-			fetched.Spec.Replicas = 1
-			Expect(k8sClient.Update(ctx, fetched)).To(Succeed())
-
-			// envtest에는 kubelet이 없어 STS의 status는 항상 비어있다 — 가드가 읽는 것은
-			// liveSTS.Spec.Replicas이므로 spec을 비교한다.
-			Consistently(func() int32 {
-				s := &appsv1.StatefulSet{}
-				_ = k8sClient.Get(ctx, key, s)
-				if s.Spec.Replicas == nil {
-					return 0
-				}
-				return *s.Spec.Replicas
-			}, "3s", "500ms").Should(Equal(int32(3))) // 거부되어 3 유지
-
-			Eventually(func() *metav1.Condition {
-				_ = k8sClient.Get(ctx, key, fetched)
-				return meta.FindStatusCondition(fetched.Status.Conditions, "Degraded")
-			}, "10s", "250ms").ShouldNot(BeNil())
-		})
-	})
-
 	Context("PVC 미소유 불변식 검증 (Task 11)", func() {
 		// 다른 It과 이름이 겹치면 envtest가 GC를 돌리지 않아 잔존 리소스와 순서 결합이
 		// 생기므로, 본 spec 전용 이름(pvc11)으로 자기 완결 실행한다.
@@ -295,7 +253,7 @@ var _ = Describe("QdrantCluster rebalance (B-3)", func() {
 			return fetched.Status.Phase
 		}, "15s", "250ms").Should(Equal("Running"))
 		Expect(fetched.Status.PlannedMoves).To(BeEmpty(), "균형 후 계획은 비어야 함")
-		Expect(fetched.Status.Rebalance).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
+		Expect(fetched.Status.ActiveMove).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
 	})
 
 	It("dry-run(enabled=false)은 계획만 노출하고 이동을 발행하지 않는다", func() {
@@ -324,5 +282,63 @@ var _ = Describe("QdrantCluster rebalance (B-3)", func() {
 			return fakeQdrant.Moves
 		}, "3s", "500ms").ShouldNot(ContainElement(ContainSubstring("dryvec")), "dry-run 은 발행 금지")
 		Expect(fetched.Status.Phase).To(Equal("Running"))
+	})
+})
+
+// B-4 scale-in drain — 구 거부 가드의 계약 대체: 축소는 거부가 아니라
+// 이동 → RemovePeer(force=false) → 1 서수 축소의 안전 절차로 완주한다.
+var _ = Describe("QdrantCluster scale-in drain (B-4)", func() {
+	It("3→2 축소를 드레인 절차로 완주한다 (이동→peer 제거→축소→정리)", func() {
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 51, URI: "http://dr4-0.dr4-headless:6335/"},
+			qdrant.Peer{ID: 52, URI: "http://dr4-1.dr4-headless:6335/"},
+			qdrant.Peer{ID: 53, URI: "http://dr4-2.dr4-headless:6335/"},
+		)
+		fakeQdrant.SetCollection("drvec", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 3, ReplicationFactor: 1,
+		})
+		fakeQdrant.SetPlacement("drvec", map[uint32]uint64{0: 51, 1: 52, 2: 53})
+
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "dr4", Namespace: "default"}}
+		qc.Spec.Replicas = 3
+		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+		sts := &appsv1.StatefulSet{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: "dr4", Namespace: "default"}, sts)
+		}, "10s", "250ms").Should(Succeed())
+		sts.Status.Replicas, sts.Status.ReadyReplicas = 3, 3
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+
+		// 균형(1/1/1) 확인 후 축소 지시
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "dr4", Namespace: "default"}, fetched)
+			return fetched.Status.Phase
+		}, "15s", "250ms").Should(Equal("Running"))
+		fetched.Spec.Replicas = 2
+		Expect(k8sClient.Update(ctx, fetched)).To(Succeed())
+
+		// ① 대상(서수 2 = peer 53)의 shard 가 최소부하 keeper(동률 → id 오름차순 = 51)로 이동
+		Eventually(func() []string { return fakeQdrant.Moves }, "20s", "250ms").
+			Should(ContainElement("drvec/2:53->51"))
+		// ② 빈 peer 53 이 합의에서 제거되고
+		Eventually(func() []uint64 { return fakeQdrant.RemovedPeers }, "20s", "250ms").
+			Should(ContainElement(uint64(53)))
+		// ③ STS 가 정확히 1 서수 축소된다
+		Eventually(func() int32 {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "dr4", Namespace: "default"}, sts)
+			if sts.Spec.Replicas == nil {
+				return -1
+			}
+			return *sts.Spec.Replicas
+		}, "20s", "250ms").Should(Equal(int32(2)))
+
+		// ④ 축소 완료(물리==목표) 후 정상 경로가 DrainStatus 를 정리한다
+		sts.Status.Replicas, sts.Status.ReadyReplicas = 2, 2
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+		Eventually(func() bool {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "dr4", Namespace: "default"}, fetched)
+			return fetched.Status.DrainStatus == nil && fetched.Status.Phase == "Running"
+		}, "20s", "250ms").Should(BeTrue(), "정상 경로 복귀 시 DrainStatus=nil + Running")
 	})
 })

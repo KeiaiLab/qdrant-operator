@@ -133,6 +133,7 @@ func (c *HTTPClient) ListCollections(ctx context.Context) ([]string, error) {
 	for _, col := range r.Collections {
 		names = append(names, col.Name)
 	}
+	slices.Sort(names) // 서버 순서 비보장 — 관측 결정론(§5.1)
 	return names, nil
 }
 
@@ -217,6 +218,15 @@ func (c *HTTPClient) MoveShard(ctx context.Context, collection string, shardID u
 			"to_peer_id":   to,
 			"method":       TransferMethodStreamRecords,
 		},
+	}
+	return c.doJSON(ctx, http.MethodPost, "/collections/"+collection+"/cluster", body, nil)
+}
+
+// DropReplica 는 잉여 복제본을 제거한다(drop_replica). 마지막 active replica 는 서버가
+// 거부하지만, 컨트롤러는 발행 전 활성 replica>=2 를 관측으로 사전 확인해야 한다.
+func (c *HTTPClient) DropReplica(ctx context.Context, collection string, shardID uint32, peerID uint64) error {
+	body := map[string]any{
+		"drop_replica": map[string]any{"shard_id": shardID, "peer_id": peerID},
 	}
 	return c.doJSON(ctx, http.MethodPost, "/collections/"+collection+"/cluster", body, nil)
 }

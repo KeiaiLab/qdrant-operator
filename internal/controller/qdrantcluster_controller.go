@@ -31,8 +31,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
@@ -100,18 +102,22 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// immutable-drift 가드 (Task 9) — stsImmutableChanged는 ownerRef를 보지 않으므로 sts를
 		// 그대로 전달한다 (DeepCopy+SetControllerReference 불필요).
 		if stsImmutableChanged(liveSTS, sts) {
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재생성 필요(Phase A 미지원)", ObservedGeneration: qc.Generation})
-			r.Recorder.Event(qc, corev1.EventTypeWarning, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 Phase A에서 미지원")
+			// 관측-우선(R1-5): status 정지 방지 — immutable 대기 중에도 B-2 관측은 갱신한다.
+			_ = r.observe(ctx, qc)
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재조정 필요", ObservedGeneration: qc.Generation})
+			r.Recorder.Event(qc, corev1.EventTypeWarning, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 미지원")
+			if qc.Status.DrainStatus != nil { // 진행 중 드레인은 '일시중단' 을 명시(무경고 정지 금지)
+				qc.Status.DrainStatus.Message = "immutable-drift — STS 수동 재조정 대기, 드레인 일시중단"
+				qc.Status.Phase = phaseDraining
+			}
 			_ = r.Status().Update(ctx, qc)
 			return ctrl.Result{}, nil // STS Update 시도 안 함 (crash-loop 방지)
 		}
-		// scale-down 가드 (Task 10) — 같은 liveSTS 재사용. naive replica 감소는 최고 서수 peer와
-		// 그 shard를 유실시키므로(OSS는 자동 reshard 없음) Phase A는 scale-up만 허용한다.
+		// B-4 scale-in drain — 구 거부 가드를 안전 절차로 대체. 드레인 미완 구간에는 STS 를
+		// apply 하지 않아 현 replicas 가 유지되고(qc.Spec.Replicas 로 렌더된 sts 의 override 함정
+		// 회피), 이동/드롭 → RemovePeer(force=false) → 1 서수 축소 순서를 강제한다.
 		if liveSTS.Spec.Replicas != nil && qc.Spec.Replicas < *liveSTS.Spec.Replicas {
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ScaleDownRefused", Message: "분산 DB scale-down은 Phase A 미지원(shard 유실 위험) — Phase B의 안전 drain 필요", ObservedGeneration: qc.Generation})
-			r.Recorder.Event(qc, corev1.EventTypeWarning, "ScaleDownRefused", "scale-down 거부됨")
-			_ = r.Status().Update(ctx, qc)
-			return ctrl.Result{}, nil // STS Update 시도 안 함 (replica 유지)
+			return r.reconcileDrainCycle(ctx, qc, liveSTS)
 		}
 	}
 
@@ -182,9 +188,12 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	if err := r.Get(ctx, client.ObjectKeyFromObject(sts), live); err != nil {
 		return ctrl.Result{}, err
 	}
+	statusBefore := *qc.Status.DeepCopy()
 	qc.Status.Replicas = live.Status.Replicas
 	qc.Status.ReadyReplicas = live.Status.ReadyReplicas
 	qc.Status.ObservedGeneration = qc.Generation
+	// 정상(비-축소) 경로 진입 = 드레인 없음 — 정상 완료와 목표 상향 abort 를 이 한 지점이 흡수(R1-6).
+	qc.Status.DrainStatus = nil
 
 	// B-2 관측(GET only, best-effort) — 실패해도 reconcile 을 막지 않는다.
 	obs := r.observe(ctx, qc)
@@ -218,8 +227,11 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 		requeue = d
 	}
 
-	if err := r.Status().Update(ctx, qc); err != nil {
-		return ctrl.Result{}, err
+	// self-trigger 방어(§5.2): status 가 실제로 변했을 때만 커밋 — steady-state 재기록 루프 차단.
+	if !apiequality.Semantic.DeepEqual(&statusBefore, &qc.Status) {
+		if err := r.Status().Update(ctx, qc); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	return requeueOrNothing(requeue), nil
 }
@@ -287,7 +299,9 @@ func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// (manager/internal.go·leaderelection) 마이그레이션 대신 표적 억제한다.
 	r.Recorder = mgr.GetEventRecorderFor("qdrantcluster") //nolint:staticcheck // SA1019: 구 events API 유지 — 신규 GetEventRecorder 비등가(Event 미제공, action 필수)
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&qdrantv1alpha1.QdrantCluster{}).
+		// generation 변경(spec)만 트리거 — 자기 status 커밋으로 인한 재기록 루프 차단(§5.3).
+		// Owns(STS 등) 이벤트와 RequeueAfter 는 영향받지 않는다.
+		For(&qdrantv1alpha1.QdrantCluster{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).

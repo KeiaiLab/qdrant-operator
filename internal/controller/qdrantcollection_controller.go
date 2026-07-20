@@ -108,10 +108,18 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// ShardNumber nil = "라이브 값 채택"(R3-3 3중 opt-in 의 1겹): 생성이면 1, 존재하면
+	// 라이브 값을 그대로 목표로 삼아 불일치·리샤드 트리거가 생기지 않는다.
+	shardTarget := uint32(1)
+	if col.Spec.ShardNumber != nil {
+		shardTarget = *col.Spec.ShardNumber
+	} else if info.Exists {
+		shardTarget = info.ShardNumber
+	}
 	desired := qdrant.CollectionSpec{
 		VectorSize:        col.Spec.Vectors.Size,
 		Distance:          col.Spec.Vectors.Distance,
-		ShardNumber:       col.Spec.ShardNumber,
+		ShardNumber:       shardTarget,
 		ReplicationFactor: col.Spec.ReplicationFactor,
 	}
 
