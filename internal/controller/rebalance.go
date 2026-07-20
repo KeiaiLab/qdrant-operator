@@ -255,7 +255,11 @@ func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qd
 		qc.Status.PlannedMoves = append(qc.Status.PlannedMoves, mv.String())
 	}
 	if len(plan) == 0 {
-		return phaseRunning, 0 // 균형 — steady-state 무행동
+		// 균형 — steady-state 무행동. 단 requeue 0(이벤트 대기만)이면 status 반영이 한 번
+		// 유실될 때(라이브 사례: v0.3.0 기동이 CRD 갱신을 앞질러 신필드 status.selector 가
+		// apiserver 에서 드롭) 재시도 이벤트가 없어 영구 미반영된다 — 완만한 주기로
+		// 자가치유 + B-2 관측 신선도를 보장한다(GET 수 회 / 5m, 행동 없음 불변).
+		return phaseRunning, 5 * time.Minute
 	}
 	if !rebalanceEnabled(qc) {
 		return phaseRunning, 2 * time.Minute // dry-run: 계획만 노출
