@@ -193,7 +193,14 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("qdrantcluster")
+	// SA1019 억제 사유: 신규 GetEventRecorder 는 events.EventRecorder(k8s.io/client-go/tools/events)
+	// 를 반환하는데, 이는 구 record.EventRecorder 와 비등가다 — 평문 Event(obj,type,reason,msg) 가
+	// 없고 Eventf(regarding,related,type,reason,action,note,…) 만 있어 related 객체·action 인자가 새로
+	// 강제된다. Recorder.Event 로 경고를 내는 두 가드(Task 9 ImmutableFieldChanged / Task 10
+	// ScaleDownRefused)의 의미를 바꾸지 않으려면 구 API 가 맞다(구 events API 는 아직 지원 — "미래
+	// 릴리스 제거" 예고일 뿐). controller-runtime 자체도 동일 지점을 //nolint:staticcheck 로 억제하므로
+	// (manager/internal.go·leaderelection) 마이그레이션 대신 표적 억제한다.
+	r.Recorder = mgr.GetEventRecorderFor("qdrantcluster") //nolint:staticcheck // SA1019: 구 events API 유지 — 신규 GetEventRecorder 비등가(Event 미제공, action 필수)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&qdrantv1alpha1.QdrantCluster{}).
 		Owns(&appsv1.StatefulSet{}).

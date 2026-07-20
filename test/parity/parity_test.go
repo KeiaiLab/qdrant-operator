@@ -237,12 +237,21 @@ func compareServiceCore(t *testing.T, label string, got, want *corev1.Service) {
 	d.equal(label+".spec.ports", got.Spec.Ports, want.Spec.Ports)
 }
 
-// compareStatefulSet 은 STS 전체(스펙 top-level + 파드 + 컨테이너 + VCT)를 비교한다.
+// compareStatefulSet 은 STS 의 기능 필드를 비교한다:
+//   - metadata.name/namespace
+//   - spec.replicas(golden=1 — 빌더가 CR.Spec.Replicas 를 그대로 반영하는지. 이 비교가 없으면
+//     replicas 변조가 parity 를 통과해버린다)
+//   - spec.podManagementPolicy/serviceName/updateStrategy
+//   - pod(compareStatefulSetPod) + 컨테이너(compareStatefulSetContainer, 컨테이너 name 포함) + VCT
+//
+// spec.selector 는 helm/오퍼레이터 라벨 스킴이 legit-differ 라 값 비교 대상이 아니다 — 대신 selector
+// 가 실제로 파드를 잡는지는 TestServiceSelectorTargetsPods 불변식이 별도로 지킨다.
 func compareStatefulSet(t *testing.T, got, want *appsv1.StatefulSet) {
 	t.Helper()
 	d := diffFields{t}
 	d.equal("StatefulSet.metadata.name", got.Name, want.Name)
 	d.equal("StatefulSet.metadata.namespace", got.Namespace, want.Namespace)
+	d.equal("StatefulSet.spec.replicas", got.Spec.Replicas, want.Spec.Replicas)
 	d.equal("StatefulSet.spec.podManagementPolicy", got.Spec.PodManagementPolicy, want.Spec.PodManagementPolicy)
 	d.equal("StatefulSet.spec.serviceName", got.Spec.ServiceName, want.Spec.ServiceName)
 	d.equal("StatefulSet.spec.updateStrategy", got.Spec.UpdateStrategy, want.Spec.UpdateStrategy)
@@ -262,8 +271,10 @@ func compareStatefulSetPod(t *testing.T, got, want corev1.PodSpec) {
 	d.equal("pod.spec.volumes", got.Volumes, want.Volumes)
 }
 
-// compareStatefulSetContainer 는 단일 qdrant 컨테이너의 기능 필드 전부(image/command/args/env/
+// compareStatefulSetContainer 는 단일 qdrant 컨테이너의 기능 필드 전부(name/image/command/args/env/
 // lifecycle/imagePullPolicy/ports/readinessProbe/resources/securityContext/volumeMounts)를 비교한다.
+// container.name(golden="qdrant")은 volumeMounts·probe 가 붙는 컨테이너 정체성이라 반드시 일치해야
+// 하며, 이 비교가 없으면 name 변조가 parity 를 통과해버린다.
 func compareStatefulSetContainer(t *testing.T, got, want []corev1.Container) {
 	t.Helper()
 	if len(got) != 1 || len(want) != 1 {
@@ -271,6 +282,7 @@ func compareStatefulSetContainer(t *testing.T, got, want []corev1.Container) {
 	}
 	gotC, wantC := got[0], want[0]
 	d := diffFields{t}
+	d.equal("container.name", gotC.Name, wantC.Name)
 	d.equal("container.image", gotC.Image, wantC.Image)
 	d.equal("container.command", gotC.Command, wantC.Command)
 	d.equal("container.args", gotC.Args, wantC.Args)
@@ -299,4 +311,47 @@ func compareVolumeClaimTemplates(t *testing.T, got, want []corev1.PersistentVolu
 	d.equal("vct.spec.accessModes", gotVCT.Spec.AccessModes, wantVCT.Spec.AccessModes)
 	d.equal("vct.spec.storageClassName", gotVCT.Spec.StorageClassName, wantVCT.Spec.StorageClassName)
 	d.equal("vct.spec.resources.requests", gotVCT.Spec.Resources.Requests, wantVCT.Spec.Resources.Requests)
+}
+
+// TestServiceSelectorTargetsPods 는 오퍼레이터가 만드는 Service.spec.selector 가 STS 파드 템플릿
+// 라벨의 부분집합인지(= selector 가 실제로 그 파드를 잡는지) 검증하는 불변식이다. golden 값 비교가
+// 아니라 빌더 산출물끼리의 상호 정합 검사 — Service selector 와 STS 파드 라벨은 helm/오퍼레이터 라벨
+// 스킴 차이 때문에 golden 비교에서 legit-differ 로 빠져 있어(TestParity), 둘이 서로 어긋나 selector 가
+// 0개 파드를 잡는 회귀(프로덕션 트래픽 0-엔드포인트 장애)를 어디서도 못 잡는 사각이 있었다. 본
+// 불변식이 그 사각을 메운다.
+func TestServiceSelectorTargetsPods(t *testing.T) {
+	qc := buildTestCluster()
+	podLabels := resources.BuildStatefulSet(qc).Spec.Template.Labels
+
+	cases := []struct {
+		label string
+		svc   *corev1.Service
+	}{
+		{"Service(headless)", resources.BuildHeadlessService(qc)},
+		{"Service(client)", resources.BuildClientService(qc)},
+	}
+	for _, c := range cases {
+		assertSelectorSelectsPods(t, c.label, c.svc.Spec.Selector, podLabels)
+	}
+}
+
+// assertSelectorSelectsPods 는 selector 가 비어있지 않고(빈 selector 는 파드를 특정하지 못함) 모든
+// (key,value) 가 podLabels 에 동일 값으로 존재하는지 확인한다 — 하나라도 어긋나면 그 Service 는 대상
+// 파드를 0개 잡아 엔드포인트가 비게 된다.
+func assertSelectorSelectsPods(t *testing.T, label string, selector, podLabels map[string]string) {
+	t.Helper()
+	if len(selector) == 0 {
+		t.Errorf("%s.spec.selector 가 비어 있음 — 파드를 특정하지 못해 0-엔드포인트 위험", label)
+		return
+	}
+	for k, v := range selector {
+		pv, ok := podLabels[k]
+		if !ok {
+			t.Errorf("%s.spec.selector[%q]=%q 가 STS 파드 라벨에 없음 — selector 가 파드를 못 잡음(0-엔드포인트)", label, k, v)
+			continue
+		}
+		if pv != v {
+			t.Errorf("%s.spec.selector[%q]=%q 가 STS 파드 라벨 값 %q 와 불일치 — selector 가 파드를 못 잡음(0-엔드포인트)", label, k, v, pv)
+		}
+	}
 }
