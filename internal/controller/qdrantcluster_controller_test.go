@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -142,6 +143,26 @@ var _ = Describe("QdrantCluster Controller", func() {
 			list := &appsv1.StatefulSetList{}
 			Expect(k8sClient.List(ctx, list, client.InNamespace("default"), client.MatchingLabels{"app.kubernetes.io/instance": "c1"})).To(Succeed())
 			Expect(list.Items).To(HaveLen(1))
+		})
+	})
+
+	Context("QdrantCluster status reconcile (Task 8)", func() {
+		// 다른 It("c1"/"test-resource"/"def")과 이름이 겹치면 envtest가 GC를 돌리지 않아
+		// 잔존 리소스와 순서 결합이 생기므로, 본 spec 전용 이름(st8)으로 자기 완결 실행한다.
+		It("status.phase와 Progressing condition이 설정된다", func() {
+			key := types.NamespacedName{Name: "st8", Namespace: "default"}
+			qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+			Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+
+			fetched := &qdrantv1alpha1.QdrantCluster{}
+			Eventually(func() string {
+				_ = k8sClient.Get(ctx, key, fetched)
+				return fetched.Status.Phase
+			}, "10s", "250ms").ShouldNot(BeEmpty())
+
+			// envtest에는 kubelet이 없어 STS의 ReadyReplicas가 항상 0으로 남는다 —
+			// 즉 phase는 절대 Running에 도달하지 못하고 Progressing=True로 고정된다.
+			Expect(meta.FindStatusCondition(fetched.Status.Conditions, "Progressing")).NotTo(BeNil())
 		})
 	})
 })
