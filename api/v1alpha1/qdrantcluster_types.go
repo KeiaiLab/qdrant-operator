@@ -24,13 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// 포트 상수 — Qdrant 컨테이너/서비스/빌더 전체가 참조하는 SSOT
-const (
-	RESTPort int32 = 6333
-	GRPCPort int32 = 6334
-	P2PPort  int32 = 6335
-)
-
 // ImageSpec은 Qdrant 컨테이너 이미지를 정의한다
 type ImageSpec struct {
 	// +kubebuilder:default="qdrant/qdrant"

@@ -2,6 +2,8 @@ package resources
 
 import qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 
+// 포트 상수 — Qdrant 컨테이너/서비스/빌더가 참조하는 SSOT (6333 REST / 6334 gRPC / 6335 Raft p2p).
+// 소비처(ConfigMap·Service·StatefulSet 빌더)가 전부 이 패키지라 여기에 둔다 — CRD 타입은 포트를 노출하지 않음.
 const (
 	RESTPort = 6333
 	GRPCPort = 6334
