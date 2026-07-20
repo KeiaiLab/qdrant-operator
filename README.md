@@ -2,17 +2,11 @@
 
 Kubernetes 위에서 [Qdrant](https://qdrant.tech) 분산 벡터 데이터베이스 클러스터를 `QdrantCluster` CRD 하나로 선언적으로 프로비저닝·운영하는 순수 오픈소스(OSS) 오퍼레이터.
 
-## 왜 필요한가 — 생태계 공백
+## 왜 필요한가
 
-OSS(self-hosted) Qdrant에는 shard auto-rebalance/resharding이 없다. 필요한 프리미티브(Raft peer join · `move_shard` · `replicate_shard` · alias)는 전부 공개 API이지만, 그 위의 오케스트레이션 policy loop는 벤더의 유료 티어(Managed / Hybrid / Private Cloud Enterprise Operator)로만 제공된다. 대안 조사(2026-07-20 기준):
+self-hosted Qdrant를 Kubernetes에서 운영하려면 StatefulSet·Service·ConfigMap·PVC를 직접 조립해야 하고, 노드를 늘리거나 줄일 때 shard 재배치를 수동으로 수행해야 한다. Qdrant는 이에 필요한 프리미티브(Raft peer join · `move_shard` · `replicate_shard` · collection alias)를 모두 공개 API로 제공하지만, 이를 엮어 원하는 상태로 수렴시키는 컨트롤 루프는 운영자 몫으로 남는다.
 
-| 솔루션 | Auto-rebalance | 상태 |
-|---|---|---|
-| 공식 Qdrant Operator | 지원 | 유료 전용 (Private Cloud Enterprise) |
-| [`ganochenkodg/qdrant-operator`](https://github.com/ganochenkodg/qdrant-operator) | 미지원 (프로비저닝·컬렉션 관리 수준) | 2024-02 archived — 사망 |
-| KubeBlocks qdrant addon | 미지원 (rebalance 언급 없음) | 활성, 프로비저닝·HA·롤링업그레이드까지만 |
-
-즉 "OSS + shard auto-rebalance/reshard"를 제공하는 오퍼레이터가 비어 있다. 본 프로젝트는 그 공백을 풀 라이프사이클 OSS 오퍼레이터로 채우는 것이 목표다. 단일 스펙으로 감당하기엔 스코프가 커서 5개 Phase로 나눠 순차 개발한다(아래 로드맵).
+이 오퍼레이터는 그 조립과 재배치를 Kubernetes 컨트롤러로 자동화하는 것을 목표로 한다. 스코프가 커서 5개 Phase로 나눠 순차 개발한다(아래 로드맵).
 
 ## Phase A 스코프 (현재 구현 범위)
 
@@ -101,7 +95,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **D** | Day-2 / 업그레이드 | (status/webhook) | Raft-aware 무중단 롤링 업그레이드 · health gate · observability · TLS | A | 예정 |
 | **E** | 오토스케일링 통합 | `QdrantAutoscaler` | 스케일 트리거 → Phase B의 rebalance 머신 연결 | B | 예정 |
 
-의존 그래프: `A → {B, C, D}`는 병렬 가능, `E`는 `B` 완료가 필요. Phase B가 이 프로젝트의 존재 이유(Cloud 유료 기능을 OSS로 대체)지만, 클러스터를 오퍼레이터가 소유하는 Phase A가 반드시 선행한다.
+의존 그래프: `A → {B, C, D}`는 병렬 가능, `E`는 `B` 완료가 필요. Phase B가 이 프로젝트의 핵심 가치(shard 재배치 자동화)지만, 클러스터를 오퍼레이터가 소유하는 Phase A가 반드시 선행한다.
 
 ## API
 
