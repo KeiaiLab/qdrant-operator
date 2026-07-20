@@ -34,12 +34,24 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 		SuccessThreshold: 1, TimeoutSeconds: 1,
 	}
 
+	// retentionPolicy=Delete → STS 네이티브 PVC 자동정리(whenDeleted/whenScaled 모두 Delete —
+	// scale-down 서수의 PVC 는 drain 이 데이터를 이미 대피시킨 뒤라 삭제해도 안전).
+	// Retain(기본·미지정)은 k8s 기본 의미와 동일하므로 필드 비설정 — helm-채택 STS 와 diff 0 유지.
+	var pvcRetention *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy
+	if qc.Spec.Persistence.RetentionPolicy == qdrantv1alpha1.RetentionDelete {
+		pvcRetention = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+			WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+			WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+		}
+	}
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: Name(qc), Namespace: qc.Namespace, Labels: Labels(qc)},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:            &replicas,
-			ServiceName:         HeadlessName(qc),
-			PodManagementPolicy: appsv1.ParallelPodManagement,
+			Replicas:                             &replicas,
+			ServiceName:                          HeadlessName(qc),
+			PodManagementPolicy:                  appsv1.ParallelPodManagement,
+			PersistentVolumeClaimRetentionPolicy: pvcRetention,
 			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
 				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
 				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptrInt32(0)},

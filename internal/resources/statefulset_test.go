@@ -42,6 +42,28 @@ func wantInt64Ptr(t *testing.T, name string, got *int64, want int64) {
 	}
 }
 
+// 스테이징 실측(2026-07-21)에서 발견된 unwired 필드 회귀 방지 — retentionPolicy=Delete 인데
+// QdrantCluster 삭제 후 PVC 2개 잔존. envtest 는 PVC GC 가 없어 이 매핑 누락을 못 잡는다.
+func TestBuildStatefulSet_RetentionPolicy매핑(t *testing.T) {
+	// 미지정(=Retain default) → 필드 비설정 (helm-채택 STS 와 diff 0)
+	if got := statefulSetFixture().Spec.PersistentVolumeClaimRetentionPolicy; got != nil {
+		t.Fatalf("Retain/미지정은 비설정이어야 함: %+v", got)
+	}
+
+	qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: "data"}}
+	qc.Spec.Replicas = 1
+	qc.Spec.Image = qdrantv1alpha1.ImageSpec{Repository: "qdrant/qdrant", Tag: "v1.18.2"}
+	oneGi := resource.MustParse("1Gi")
+	qc.Spec.Persistence = qdrantv1alpha1.PersistenceSpec{Size: &oneGi, StorageClassName: "ceph-rbd", RetentionPolicy: qdrantv1alpha1.RetentionDelete}
+	p := BuildStatefulSet(qc).Spec.PersistentVolumeClaimRetentionPolicy
+	if p == nil {
+		t.Fatal("Delete 인데 PersistentVolumeClaimRetentionPolicy 비설정 — unwired 재발")
+	}
+	if p.WhenDeleted != appsv1.DeletePersistentVolumeClaimRetentionPolicyType || p.WhenScaled != appsv1.DeletePersistentVolumeClaimRetentionPolicyType {
+		t.Fatalf("whenDeleted/whenScaled 둘 다 Delete 여야 함: %+v", p)
+	}
+}
+
 func TestBuildStatefulSet_Core(t *testing.T) {
 	sts := statefulSetFixture()
 
