@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters/status
+  verbs:
+  - get
+  - patch
+  - update
