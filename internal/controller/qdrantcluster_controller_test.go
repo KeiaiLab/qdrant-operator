@@ -22,6 +22,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -106,6 +107,33 @@ var _ = Describe("QdrantCluster Controller", func() {
 			// envtest에는 kubelet이 없어 STS의 ReadyReplicas가 항상 0으로 남는다 —
 			// 즉 phase는 절대 Running에 도달하지 못하고 Progressing=True로 고정된다.
 			Expect(meta.FindStatusCondition(fetched.Status.Conditions, "Progressing")).NotTo(BeNil())
+		})
+	})
+
+	Context("STS immutable 필드 변경 가드 (Task 9)", func() {
+		// 다른 It과 이름이 겹치면 envtest가 GC를 돌리지 않아 잔존 리소스와 순서 결합이
+		// 생기므로, 본 spec 전용 이름(im9)으로 자기 완결 실행한다.
+		It("persistence.size 변경은 crash 없이 Degraded로 표면화된다", func() {
+			key := types.NamespacedName{Name: "im9", Namespace: "default"}
+			qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+			Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+
+			// 매니저의 최초 reconcile이 STS를 만들 때까지 대기 (수동 Reconcile 호출 금지 — 매니저와 경합 방지)
+			sts := &appsv1.StatefulSet{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, key, sts)
+			}, "10s", "250ms").Should(Succeed())
+
+			fetched := &qdrantv1alpha1.QdrantCluster{}
+			Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+			twentyGi := resource.MustParse("20Gi")
+			fetched.Spec.Persistence.Size = &twentyGi
+			Expect(k8sClient.Update(ctx, fetched)).To(Succeed())
+
+			Eventually(func() *metav1.Condition {
+				_ = k8sClient.Get(ctx, key, fetched)
+				return meta.FindStatusCondition(fetched.Status.Conditions, "Degraded")
+			}, "10s", "250ms").ShouldNot(BeNil())
 		})
 	})
 })

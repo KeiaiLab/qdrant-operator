@@ -22,10 +22,12 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -37,7 +39,8 @@ import (
 // QdrantClusterReconciler reconciles a QdrantCluster object
 type QdrantClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantclusters,verbs=get;list;watch;create;update;patch;delete
@@ -68,12 +71,52 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	csvc := resources.BuildClientService(qc)
 	sts := resources.BuildStatefulSet(qc)
 
-	for _, obj := range []client.Object{sa, cm, hsvc, csvc, sts} {
+	for _, obj := range []client.Object{sa, cm, hsvc, csvc} {
 		if err := r.applyOwned(ctx, qc, obj); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
+
+	// STS는 volumeClaimTemplates(스토리지 크기)·serviceName·selector가 immutable이라 apiserver가
+	// Update를 거부한다 — apply 직전에 라이브 STS와 비교해 drift가 있으면 (불가능한) patch를 시도하는
+	// 대신 Degraded condition + Event로 표면화하고 종료한다 (crash-loop 방지, Task 9).
+	liveSTS := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(sts), liveSTS); err == nil {
+		d := sts.DeepCopy()
+		_ = controllerutil.SetControllerReference(qc, d, r.Scheme)
+		if stsImmutableChanged(liveSTS, d) {
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Degraded", Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재생성 필요(Phase A 미지원)", ObservedGeneration: qc.Generation})
+			r.Recorder.Event(qc, corev1.EventTypeWarning, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 Phase A에서 미지원")
+			_ = r.Status().Update(ctx, qc)
+			return ctrl.Result{}, nil // STS Update 시도 안 함 (crash-loop 방지)
+		}
+	}
+
+	if err := r.applyOwned(ctx, qc, sts); err != nil {
+		return ctrl.Result{}, err
+	}
 	return r.reconcileStatus(ctx, qc, sts)
+}
+
+// stsImmutableChanged는 라이브 STS(existing)와 렌더 결과(desired) 사이에 apiserver가 거부할
+// immutable 필드 변경이 있는지 검사한다.
+func stsImmutableChanged(existing, desired *appsv1.StatefulSet) bool {
+	if existing.Spec.ServiceName != desired.Spec.ServiceName {
+		return true
+	}
+	// VCT 전체 DeepEqual 은 apiserver 가 채운 default(volumeMode 등) 로 항상 불일치 → 오탐.
+	// 실제 immutable 변경 신호인 스토리지 크기 요청만 표적 비교한다.
+	if len(existing.Spec.VolumeClaimTemplates) > 0 && len(desired.Spec.VolumeClaimTemplates) > 0 {
+		e := existing.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests.Storage()
+		d := desired.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests.Storage()
+		if !e.Equal(*d) {
+			return true
+		}
+	}
+	if !apiequality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
+		return true
+	}
+	return false
 }
 
 // applyOwned는 desired에 qc를 controller owner로 세팅한 뒤, 기존 리소스가 없으면 Create,
@@ -109,7 +152,8 @@ func (r *QdrantClusterReconciler) applyOwned(ctx context.Context, qc *qdrantv1al
 // reconcileStatus는 방금 applyOwned로 apply한 STS를 다시 Get해(캐시 read-after-write 지연 —
 // applyOwned 주석 참고 — 이 sts 파라미터 자체는 아직 최신 status를 반영하지 못했을 수 있음)
 // live status로 QdrantCluster.status를 갱신한다. replicas 전원이 준비돼야만 Running/Ready이고,
-// 그 외에는 Provisioning/Progressing이다(Degraded·Scaling·immutable-drift는 Task 9~10에서 추가).
+// 그 외에는 Provisioning/Progressing이다(immutable-drift Degraded는 Reconcile에서 STS apply 전에
+// 먼저 처리되어 여기까지 오지 않음 — Task 9. Scaling은 Task 10에서 추가).
 func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster, sts *appsv1.StatefulSet) (ctrl.Result, error) {
 	live := &appsv1.StatefulSet{}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(sts), live); err != nil {
@@ -139,6 +183,7 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("qdrantcluster")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&qdrantv1alpha1.QdrantCluster{}).
 		Owns(&appsv1.StatefulSet{}).
