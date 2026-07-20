@@ -127,7 +127,7 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	case paramsMatch(info, desired):
 		// 존재 + 파라미터 일치 → 채택. CR 생성으로 만들어진 경우가 아니면 adopted 로 표시.
-		if !meta.IsStatusConditionTrue(col.Status.Conditions, "Ready") {
+		if !meta.IsStatusConditionTrue(col.Status.Conditions, condReady) {
 			col.Status.Adopted = true
 			r.Recorder.Event(col, "Normal", "CollectionAdopted", name)
 		}
@@ -152,14 +152,14 @@ func paramsMatch(live qdrant.CollectionInfo, want qdrant.CollectionSpec) bool {
 }
 
 func (r *QdrantCollectionReconciler) setReady(ctx context.Context, col *qdrantv1alpha1.QdrantCollection, points uint64) (ctrl.Result, error) {
-	col.Status.Phase = "Ready"
+	col.Status.Phase = condReady
 	col.Status.PointsCount = points
 	col.Status.ObservedGeneration = col.Generation
 	meta.SetStatusCondition(&col.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ensured",
+		Type: condReady, Status: metav1.ConditionTrue, Reason: "Ensured",
 		Message: "컬렉션 존재 + 파라미터 일치", ObservedGeneration: col.Generation})
 	meta.SetStatusCondition(&col.Status.Conditions, metav1.Condition{
-		Type: "Degraded", Status: metav1.ConditionFalse, Reason: "Healthy",
+		Type: condDegraded, Status: metav1.ConditionFalse, Reason: "Healthy",
 		Message: "정상", ObservedGeneration: col.Generation})
 	if err := r.Status().Update(ctx, col); err != nil {
 		return ctrl.Result{}, err
@@ -169,10 +169,10 @@ func (r *QdrantCollectionReconciler) setReady(ctx context.Context, col *qdrantv1
 }
 
 func (r *QdrantCollectionReconciler) setDegraded(ctx context.Context, col *qdrantv1alpha1.QdrantCollection, reason, msg string) {
-	col.Status.Phase = "Degraded"
+	col.Status.Phase = condDegraded
 	col.Status.ObservedGeneration = col.Generation
 	meta.SetStatusCondition(&col.Status.Conditions, metav1.Condition{
-		Type: "Degraded", Status: metav1.ConditionTrue, Reason: reason,
+		Type: condDegraded, Status: metav1.ConditionTrue, Reason: reason,
 		Message: msg, ObservedGeneration: col.Generation})
 	r.Recorder.Event(col, "Warning", reason, msg)
 	_ = r.Status().Update(ctx, col)

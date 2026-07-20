@@ -36,6 +36,12 @@ import (
 	resources "github.com/keiailab/qdrant-operator/internal/resources"
 )
 
+// condition 타입 / phase 값 상수 — QdrantCluster·QdrantCollection 컨트롤러 공용.
+const (
+	condReady    = "Ready"
+	condDegraded = "Degraded"
+)
+
 // QdrantClusterReconciler reconciles a QdrantCluster object
 type QdrantClusterReconciler struct {
 	client.Client
@@ -87,7 +93,7 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// immutable-drift 가드 (Task 9) — stsImmutableChanged는 ownerRef를 보지 않으므로 sts를
 		// 그대로 전달한다 (DeepCopy+SetControllerReference 불필요).
 		if stsImmutableChanged(liveSTS, sts) {
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Degraded", Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재생성 필요(Phase A 미지원)", ObservedGeneration: qc.Generation})
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재생성 필요(Phase A 미지원)", ObservedGeneration: qc.Generation})
 			r.Recorder.Event(qc, corev1.EventTypeWarning, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 Phase A에서 미지원")
 			_ = r.Status().Update(ctx, qc)
 			return ctrl.Result{}, nil // STS Update 시도 안 함 (crash-loop 방지)
@@ -95,7 +101,7 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// scale-down 가드 (Task 10) — 같은 liveSTS 재사용. naive replica 감소는 최고 서수 peer와
 		// 그 shard를 유실시키므로(OSS는 자동 reshard 없음) Phase A는 scale-up만 허용한다.
 		if liveSTS.Spec.Replicas != nil && qc.Spec.Replicas < *liveSTS.Spec.Replicas {
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Degraded", Status: metav1.ConditionTrue, Reason: "ScaleDownRefused", Message: "분산 DB scale-down은 Phase A 미지원(shard 유실 위험) — Phase B의 안전 drain 필요", ObservedGeneration: qc.Generation})
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ScaleDownRefused", Message: "분산 DB scale-down은 Phase A 미지원(shard 유실 위험) — Phase B의 안전 drain 필요", ObservedGeneration: qc.Generation})
 			r.Recorder.Event(qc, corev1.EventTypeWarning, "ScaleDownRefused", "scale-down 거부됨")
 			_ = r.Status().Update(ctx, qc)
 			return ctrl.Result{}, nil // STS Update 시도 안 함 (replica 유지)
@@ -176,7 +182,7 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	ready := live.Status.ReadyReplicas == qc.Spec.Replicas && qc.Spec.Replicas > 0
 	if ready {
 		qc.Status.Phase = "Running"
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condReady, Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
 		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Progressing", Status: metav1.ConditionFalse, Reason: "Stable", Message: "안정 상태", ObservedGeneration: qc.Generation})
 	} else {
 		qc.Status.Phase = "Provisioning"

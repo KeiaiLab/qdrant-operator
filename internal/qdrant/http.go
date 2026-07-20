@@ -48,7 +48,7 @@ func (c *HTTPClient) GetCollection(ctx context.Context, name string) (Collection
 	if err != nil {
 		return CollectionInfo{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return CollectionInfo{Exists: false}, nil
 	}
@@ -90,7 +90,7 @@ func (c *HTTPClient) CreateCollection(ctx context.Context, name string, spec Col
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("PUT /collections/%s: %s: %s", name, resp.Status, string(b))
@@ -107,7 +107,7 @@ func (c *HTTPClient) DeleteCollection(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("DELETE /collections/%s: %s: %s", name, resp.Status, string(b))

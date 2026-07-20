@@ -30,13 +30,16 @@ import (
 // 주입된다 — 시나리오들이 상태 세팅/검증에 직접 사용한다.
 var fakeQdrant *qdrant.Fake
 
+// collectionTestCluster — 본 파일 시나리오 공용 QdrantCluster 이름.
+const collectionTestCluster = "colc1"
+
 // 시나리오별 고유 이름 — 공유 default ns 에서 이전 spec 잔재와의 순서 결합을 피한다
 // (envtest 는 GC 를 돌리지 않는다). suite 전역 ctx 를 사용한다.
-func newCollectionCR(name, cluster string, shard uint32, onDelete qdrantv1alpha1.CollectionDeletePolicy) *qdrantv1alpha1.QdrantCollection {
+func newCollectionCR(name string, shard uint32, onDelete qdrantv1alpha1.CollectionDeletePolicy) *qdrantv1alpha1.QdrantCollection {
 	return &qdrantv1alpha1.QdrantCollection{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec: qdrantv1alpha1.QdrantCollectionSpec{
-			ClusterRef:        cluster,
+			ClusterRef:        collectionTestCluster,
 			Vectors:           qdrantv1alpha1.VectorsSpec{Size: 384, Distance: "Cosine"},
 			ShardNumber:       shard,
 			ReplicationFactor: 1,
@@ -48,9 +51,9 @@ func newCollectionCR(name, cluster string, shard uint32, onDelete qdrantv1alpha1
 var _ = Describe("QdrantCollection Controller", func() {
 	It("클러스터가 있으면 새 컬렉션을 생성하고 Ready 가 된다", func() {
 		Expect(k8sClient.Create(ctx, &qdrantv1alpha1.QdrantCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: "colc1", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: collectionTestCluster, Namespace: "default"},
 		})).To(Succeed())
-		Expect(k8sClient.Create(ctx, newCollectionCR("vec1", "colc1", 2, ""))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newCollectionCR("vec1", 2, ""))).To(Succeed())
 
 		fetched := &qdrantv1alpha1.QdrantCollection{}
 		Eventually(func() string {
@@ -70,7 +73,7 @@ var _ = Describe("QdrantCollection Controller", func() {
 			Exists: true, PointsCount: 928287,
 			VectorSize: 384, Distance: "Cosine", ShardNumber: 1, ReplicationFactor: 1,
 		}
-		Expect(k8sClient.Create(ctx, newCollectionCR("legacy1", "colc1", 1, ""))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newCollectionCR("legacy1", 1, ""))).To(Succeed())
 
 		fetched := &qdrantv1alpha1.QdrantCollection{}
 		Eventually(func() bool {
@@ -86,7 +89,7 @@ var _ = Describe("QdrantCollection Controller", func() {
 		fakeQdrant.Collections["mismatch1"] = qdrant.CollectionInfo{
 			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 4, ReplicationFactor: 1,
 		}
-		Expect(k8sClient.Create(ctx, newCollectionCR("mismatch1", "colc1", 1, ""))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newCollectionCR("mismatch1", 1, ""))).To(Succeed())
 
 		fetched := &qdrantv1alpha1.QdrantCollection{}
 		Eventually(func() string {
@@ -101,7 +104,7 @@ var _ = Describe("QdrantCollection Controller", func() {
 
 	It("onDelete=Delete 만 CR 삭제 시 컬렉션을 지우고, Retain 은 보존한다", func() {
 		// Delete 정책
-		Expect(k8sClient.Create(ctx, newCollectionCR("deleteme1", "colc1", 1, qdrantv1alpha1.CollectionDelete))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newCollectionCR("deleteme1", 1, qdrantv1alpha1.CollectionDelete))).To(Succeed())
 		delCR := &qdrantv1alpha1.QdrantCollection{}
 		Eventually(func() string {
 			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "deleteme1", Namespace: "default"}, delCR)
@@ -111,7 +114,7 @@ var _ = Describe("QdrantCollection Controller", func() {
 		Eventually(func() []string { return fakeQdrant.Deleted }, "10s", "250ms").Should(ContainElement("deleteme1"))
 
 		// Retain(기본) 정책
-		Expect(k8sClient.Create(ctx, newCollectionCR("keepme1", "colc1", 1, ""))).To(Succeed())
+		Expect(k8sClient.Create(ctx, newCollectionCR("keepme1", 1, ""))).To(Succeed())
 		keepCR := &qdrantv1alpha1.QdrantCollection{}
 		Eventually(func() string {
 			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "keepme1", Namespace: "default"}, keepCR)
