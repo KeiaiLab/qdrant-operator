@@ -42,7 +42,7 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 					Containers: []corev1.Container{{
 						Name:      "qdrant",
 						Image:     image,
-						Command:   []string{"/bin/sh", "-c", "/qdrant/config/initialize.sh"},
+						Command:   []string{"/bin/sh", "-c", ConfigMountDir + "/" + InitScriptFile},
 						Resources: qc.Spec.Resources,
 						Ports: []corev1.ContainerPort{
 							{Name: "http", ContainerPort: RESTPort},
@@ -52,12 +52,12 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 						ReadinessProbe: probe,
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "qdrant-storage", MountPath: "/qdrant/storage"},
-							{Name: "qdrant-config", MountPath: "/qdrant/config/initialize.sh", SubPath: "initialize.sh"},
-							{Name: "qdrant-config", MountPath: "/qdrant/config/production.yaml", SubPath: "production.yaml"},
+							{Name: ConfigVolumeName, MountPath: ConfigMountDir + "/" + InitScriptFile, SubPath: InitScriptFile},
+							{Name: ConfigVolumeName, MountPath: ConfigMountDir + "/" + ProdConfigFile, SubPath: ProdConfigFile},
 						},
 					}},
 					Volumes: []corev1.Volume{{
-						Name: "qdrant-config",
+						Name: ConfigVolumeName,
 						VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 							LocalObjectReference: corev1.LocalObjectReference{Name: ConfigMapName(qc)},
 							DefaultMode:          ptrInt32(0o755),

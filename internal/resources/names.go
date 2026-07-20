@@ -10,6 +10,18 @@ const (
 	P2PPort  = 6335
 )
 
+// 설정 파일명·마운트 경로 — ConfigMap 데이터 키(configmap.go)와 STS subPath 마운트(statefulset.go)가
+// 공유하는 SSOT. 드리프트 시 마운트가 조용히 깨지므로 상수화한다.
+const (
+	InitScriptFile = "initialize.sh"
+	ProdConfigFile = "production.yaml"
+	ConfigMountDir = "/qdrant/config"
+)
+
+// STS 내 config 볼륨명 — VolumeMounts[].Name 과 Volumes[].Name 이 반드시 일치해야 하는 SSOT.
+// 드리프트 시 파드가 "volume not found" 로 스케줄링 실패한다.
+const ConfigVolumeName = "qdrant-config"
+
 func Name(qc *qdrantv1alpha1.QdrantCluster) string          { return qc.Name }
 func HeadlessName(qc *qdrantv1alpha1.QdrantCluster) string  { return qc.Name + "-headless" }
 func ClientName(qc *qdrantv1alpha1.QdrantCluster) string    { return qc.Name }

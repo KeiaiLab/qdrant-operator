@@ -51,8 +51,8 @@ func BuildConfigMap(qc *qdrantv1alpha1.QdrantCluster) *corev1.ConfigMap {
 			Labels:    Labels(qc),
 		},
 		Data: map[string]string{
-			"initialize.sh":   initScript(qc),
-			"production.yaml": productionYAML(qc),
+			InitScriptFile: initScript(qc),
+			ProdConfigFile: productionYAML(qc),
 		},
 	}
 }
