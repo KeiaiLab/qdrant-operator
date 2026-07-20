@@ -25,10 +25,20 @@ type CollectionInfo struct {
 	ReplicationFactor uint32
 }
 
-// Client 는 B-1 이 필요로 하는 최소 표면. 이후 마일스톤(B-2 분포 관측, B-3 move_shard,
-// B-4 remove peer, B-5 alias)에서 메서드를 증분 추가한다.
+// Client 는 컨트롤러가 쓰는 qdrant 표면 전체 — B-1(컬렉션 수명주기) + B-2(관측) +
+// B-3/B-4(이동·peer 제거) + B-5(alias 스왑).
 type Client interface {
+	// B-1 컬렉션 수명주기
 	GetCollection(ctx context.Context, name string) (CollectionInfo, error)
 	CreateCollection(ctx context.Context, name string, spec CollectionSpec) error
 	DeleteCollection(ctx context.Context, name string) error
+	// B-2 관측
+	ListCollections(ctx context.Context) ([]string, error)
+	ClusterInfo(ctx context.Context) (*ClusterInfo, error)
+	CollectionCluster(ctx context.Context, name string) (*CollectionClusterInfo, error)
+	// B-3/B-4 실행
+	MoveShard(ctx context.Context, collection string, shardID uint32, from, to uint64) error
+	RemovePeer(ctx context.Context, peerID uint64, force bool) error
+	// B-5 alias
+	UpdateAliases(ctx context.Context, actions []AliasAction) error
 }
