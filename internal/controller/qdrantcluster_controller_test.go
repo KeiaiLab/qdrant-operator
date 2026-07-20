@@ -136,4 +136,46 @@ var _ = Describe("QdrantCluster Controller", func() {
 			}, "10s", "250ms").ShouldNot(BeNil())
 		})
 	})
+
+	Context("STS scale-down 거부 가드 (Task 10)", func() {
+		// 다른 It과 이름이 겹치면 envtest가 GC를 돌리지 않아 잔존 리소스와 순서 결합이
+		// 생기므로, 본 spec 전용 이름(sd10)으로 자기 완결 실행한다.
+		It("scale-down은 거부되고 STS replica는 유지된다", func() {
+			key := types.NamespacedName{Name: "sd10", Namespace: "default"}
+			qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+			qc.Spec.Replicas = 3
+			Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+
+			// 매니저의 최초 reconcile이 STS를 replicas=3으로 만들 때까지 대기 (수동 Reconcile 호출 금지 — 매니저와 경합 방지)
+			Eventually(func() int32 {
+				s := &appsv1.StatefulSet{}
+				_ = k8sClient.Get(ctx, key, s)
+				if s.Spec.Replicas == nil {
+					return 0
+				}
+				return *s.Spec.Replicas
+			}, "10s", "250ms").Should(Equal(int32(3)))
+
+			fetched := &qdrantv1alpha1.QdrantCluster{}
+			Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+			fetched.Spec.Replicas = 1
+			Expect(k8sClient.Update(ctx, fetched)).To(Succeed())
+
+			// envtest에는 kubelet이 없어 STS의 status는 항상 비어있다 — 가드가 읽는 것은
+			// liveSTS.Spec.Replicas이므로 spec을 비교한다.
+			Consistently(func() int32 {
+				s := &appsv1.StatefulSet{}
+				_ = k8sClient.Get(ctx, key, s)
+				if s.Spec.Replicas == nil {
+					return 0
+				}
+				return *s.Spec.Replicas
+			}, "3s", "500ms").Should(Equal(int32(3))) // 거부되어 3 유지
+
+			Eventually(func() *metav1.Condition {
+				_ = k8sClient.Get(ctx, key, fetched)
+				return meta.FindStatusCondition(fetched.Status.Conditions, "Degraded")
+			}, "10s", "250ms").ShouldNot(BeNil())
+		})
+	})
 })
