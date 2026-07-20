@@ -240,3 +240,7 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+.PHONY: publish-scan
+publish-scan: ## 공개 적합성 스캔 — push 전 내부 참조/평가성 표현 검사 (공개 저장소 게이트)
+	bash hack/publish-scan.sh
