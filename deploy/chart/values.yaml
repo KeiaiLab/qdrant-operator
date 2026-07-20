@@ -1,5 +1,6 @@
 # qdrant-operator Helm 차트 기본값
-# 조건부 렌더는 RFC-0027 패턴 `{{- if ne .Values.x false }}` 사용 — `| default true` 금지.
+# 조건부 렌더는 `{{- if ne .Values.x false }}` 패턴 사용 — `| default true` 는
+# 사용자가 명시한 false 를 truthy 로 되살리므로 토글에 쓰지 않는다.
 
 # -- 컨트롤러 매니저 레플리카 수 (리더 선출로 active/standby)
 replicaCount: 1
