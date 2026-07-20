@@ -1,0 +1,18 @@
+qdrant-operator 가 네임스페이스 "{{ .Release.Namespace }}" 에 배포되었습니다.
+
+1. 컨트롤러 매니저 롤아웃 확인:
+
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "qdrant-operator.managerName" . }}
+
+{{- if ne .Values.crd.install false }}
+
+2. QdrantCluster CRD 설치 확인:
+
+   kubectl get crd qdrantclusters.qdrant.keiailab.com
+{{- end }}
+
+3. QdrantCluster 커스텀 리소스 예시 적용:
+
+   kubectl -n {{ .Release.Namespace }} apply -f https://github.com/keiailab/qdrant-operator/raw/main/config/samples/qdrant_v1alpha1_qdrantcluster.yaml
+
+이미지: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}

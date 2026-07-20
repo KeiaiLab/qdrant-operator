@@ -1,0 +1,89 @@
+# qdrant-operator Helm 차트 기본값
+# 조건부 렌더는 RFC-0027 패턴 `{{- if ne .Values.x false }}` 사용 — `| default true` 금지.
+
+# -- 컨트롤러 매니저 레플리카 수 (리더 선출로 active/standby)
+replicaCount: 1
+
+image:
+  # -- 컨트롤러 매니저 이미지 저장소
+  repository: ghcr.io/keiailab/qdrant-operator
+  # -- 이미지 태그 (미지정 시 Chart.appVersion 사용)
+  tag: ""
+  # -- 이미지 pull 정책
+  pullPolicy: IfNotPresent
+
+# -- 사설 레지스트리 pull 시크릿 (예: [{name: regcred}])
+imagePullSecrets: []
+
+# -- 리소스 이름 재정의
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # -- ServiceAccount 생성 여부 (false 시 기존 SA 를 name 으로 참조)
+  create: true
+  # -- SA 이름 (빈 값이면 fullname 기반 자동 생성)
+  name: ""
+  # -- SA 어노테이션 (IRSA/Workload Identity 등)
+  annotations: {}
+
+rbac:
+  # -- 오퍼레이터 동작에 필요한 RBAC(ClusterRole/RoleBinding) 생성 여부
+  create: true
+  # -- QdrantCluster admin/editor/viewer 집계용 ClusterRole 생성 여부
+  #    (사람 운영자용 — 오퍼레이터 자체는 사용하지 않음)
+  aggregateClusterRoles: true
+
+crd:
+  # -- QdrantCluster CRD 를 차트로 설치할지 여부
+  install: true
+  # -- 언인스톨 시 CRD 를 보존할지 여부 (helm.sh/resource-policy: keep)
+  #    CRD 삭제는 모든 QdrantCluster CR 을 연쇄 삭제하므로 기본 보존
+  keep: true
+
+# -- 리더 선출 (HA active/standby)
+leaderElection:
+  enabled: true
+
+# -- health/readiness probe 바인드 포트 (--health-probe-bind-address)
+healthProbe:
+  port: 8081
+
+# -- 컨트롤러 매니저 추가 실행 인자 (예: ["--metrics-bind-address=:8443"])
+extraArgs: []
+
+# -- 컨트롤러 매니저 리소스 요청/제한
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+# -- Pod securityContext (restricted Pod Security Standards 준수)
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- 컨테이너 securityContext (restricted PSS 준수)
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - "ALL"
+
+# -- Pod 종료 유예 시간(초)
+terminationGracePeriodSeconds: 10
+
+# -- Pod 추가 어노테이션
+podAnnotations: {}
+# -- Pod 추가 라벨
+podLabels: {}
+
+# -- 스케줄링 제약
+nodeSelector: {}
+tolerations: []
+affinity: {}

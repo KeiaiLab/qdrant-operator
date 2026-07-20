@@ -1,0 +1,20 @@
+apiVersion: v2
+name: qdrant-operator
+description: QdrantCluster 커스텀 리소스를 조정하는 qdrant-operator 배포용 Helm 차트
+# 차트 타입: 오퍼레이터(컨트롤러 매니저) 워크로드
+type: application
+# 차트 버전 (SemVer 2) — 차트 자체의 릴리스 버전
+version: 0.1.0
+# 오퍼레이터(컨테이너 이미지)의 버전 — image.tag 미지정 시 기본값으로 사용
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+keywords:
+  - qdrant
+  - operator
+  - vector-database
+  - kubebuilder
+home: https://github.com/keiailab/qdrant-operator
+sources:
+  - https://github.com/keiailab/qdrant-operator
+maintainers:
+  - name: keiailab

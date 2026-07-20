@@ -1,0 +1,196 @@
+{{- if ne .Values.rbac.create false }}
+# 오퍼레이터 운영 RBAC — `kustomize build config/rbac` 산출물을 차트 템플릿화.
+# leader-election Role/RoleBinding 과 ServiceAccount 는 각각 별도 템플릿.
+---
+# 오퍼레이터가 관리하는 워크로드/CR 에 대한 권한 (config/rbac/role.yaml)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-manager-role
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-manager-rolebinding
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "qdrant-operator.fullname" . }}-manager-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "qdrant-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+---
+# /metrics 엔드포인트 authn/authz 보호용 (config/rbac/metrics_auth_role.yaml)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-metrics-auth-role
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-metrics-auth-rolebinding
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "qdrant-operator.fullname" . }}-metrics-auth-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "qdrant-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+---
+# 스크레이퍼가 /metrics 를 읽을 수 있게 하는 ClusterRole (config/rbac/metrics_reader_role.yaml)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-metrics-reader
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+rules:
+- nonResourceURLs:
+  - /metrics
+  verbs:
+  - get
+{{- if ne .Values.rbac.aggregateClusterRoles false }}
+---
+# QdrantCluster admin 집계 ClusterRole (사람 운영자용 — 오퍼레이터 미사용)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-qdrantcluster-admin-role
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters
+  verbs:
+  - '*'
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters/status
+  verbs:
+  - get
+---
+# QdrantCluster editor 집계 ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-qdrantcluster-editor-role
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters/status
+  verbs:
+  - get
+---
+# QdrantCluster viewer 집계 ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "qdrant-operator.fullname" . }}-qdrantcluster-viewer-role
+  labels:
+    {{- include "qdrant-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantclusters/status
+  verbs:
+  - get
+{{- end }}
+{{- end }}
