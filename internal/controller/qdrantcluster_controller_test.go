@@ -178,4 +178,32 @@ var _ = Describe("QdrantCluster Controller", func() {
 			}, "10s", "250ms").ShouldNot(BeNil())
 		})
 	})
+
+	Context("PVC 미소유 불변식 검증 (Task 11)", func() {
+		// 다른 It과 이름이 겹치면 envtest가 GC를 돌리지 않아 잔존 리소스와 순서 결합이
+		// 생기므로, 본 spec 전용 이름(pvc11)으로 자기 완결 실행한다.
+		It("PVC는 QdrantCluster의 controller-ref를 갖지 않는다(데이터 안전)", func() {
+			key := types.NamespacedName{Name: "pvc11", Namespace: "default"}
+			qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+			Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+
+			// 매니저의 최초 reconcile이 STS를 만들 때까지 대기 (수동 Reconcile 호출 금지 — 매니저와 경합 방지)
+			sts := &appsv1.StatefulSet{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, key, sts)
+			}, "10s", "250ms").Should(Succeed())
+
+			// STS의 volumeClaimTemplates는 STS가 소유하거나 무소유 — QdrantCluster 직접 소유 금지
+			// CR 삭제 시 GC가 PVC를 함께 삭제하는 것을 방지 (데이터 안전 설계 §7)
+			for _, vct := range sts.Spec.VolumeClaimTemplates {
+				for _, ownerRef := range vct.OwnerReferences {
+					Expect(ownerRef.Kind).NotTo(Equal("QdrantCluster"),
+						"PVC 템플릿이 QdrantCluster controller-ref를 가지면 CR 삭제 시 데이터 유실 위험")
+				}
+			}
+
+			// STS 자체는 QdrantCluster의 controller-ref를 가져야 함 (대조군 — STS는 CR 삭제 시 함께 삭제됨)
+			Expect(metav1.GetControllerOf(sts).Kind).To(Equal("QdrantCluster"))
+		})
+	})
 })
