@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -244,8 +246,15 @@ var _ = Describe("QdrantCluster rebalance (B-3)", func() {
 			}
 			return count[31] == 2 && count[32] == 1
 		}, "20s", "250ms").Should(BeTrue(), "3:0 → 2:1 수렴해야 함")
-		Expect(fakeQdrant.Moves).To(HaveLen(1), "필요 이동은 정확히 1건(동시 1건·최소 이동)")
-		Expect(fakeQdrant.Moves[0]).To(Equal("rebvec/0:31->32"), "결정론 첫 이동")
+		// Moves 는 suite 전역 누적이라 본 컬렉션(rebvec) 것만 센다 — 다른 스펙과 실행 순서 무관.
+		var rebMoves []string
+		for _, m := range fakeQdrant.Moves {
+			if strings.HasPrefix(m, "rebvec/") {
+				rebMoves = append(rebMoves, m)
+			}
+		}
+		Expect(rebMoves).To(HaveLen(1), "필요 이동은 정확히 1건(동시 1건·최소 이동)")
+		Expect(rebMoves[0]).To(Equal("rebvec/0:31->32"), "결정론 첫 이동")
 
 		fetched := &qdrantv1alpha1.QdrantCluster{}
 		Eventually(func() string {

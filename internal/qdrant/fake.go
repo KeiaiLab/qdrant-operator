@@ -3,6 +3,7 @@ package qdrant
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -33,6 +34,8 @@ type Fake struct {
 	RemovedPeers []uint64
 	Aliases      map[string]string // alias → collection
 	AliasLog     [][]AliasAction
+	// Points: 컬렉션별 point 원문(scroll/upsert 무해석 파이프 모사).
+	Points map[string][]json.RawMessage
 }
 
 func NewFake() *Fake {
@@ -44,7 +47,69 @@ func NewFake() *Fake {
 		Placement:   map[string]map[uint32]uint64{},
 		InFlight:    map[string][]TransferInfo{},
 		Aliases:     map[string]string{},
+		Points:      map[string][]json.RawMessage{},
 	}
+}
+
+// SetPoints 는 컬렉션에 n 개의 더미 point 를 채운다(리샤드 복사 시나리오용).
+func (f *Fake) SetPoints(name string, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pts := make([]json.RawMessage, 0, n)
+	for i := range n {
+		pts = append(pts, json.RawMessage(fmt.Sprintf(`{"id":%d,"vector":[0.1]}`, i)))
+	}
+	f.Points[name] = pts
+	info := f.Collections[name]
+	info.PointsCount = uint64(n)
+	f.Collections[name] = info
+}
+
+func (f *Fake) ListAliases(_ context.Context) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["ListAliases"]; err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	maps.Copy(out, f.Aliases)
+	return out, nil
+}
+
+// ScrollPoints — offset 은 정수 인덱스(json number) 모사. next 는 남은 페이지 있으면 다음 인덱스.
+func (f *Fake) ScrollPoints(_ context.Context, collection string, offset json.RawMessage, limit int) ([]json.RawMessage, json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["ScrollPoints"]; err != nil {
+		return nil, nil, err
+	}
+	pts := f.Points[collection]
+	start := 0
+	if len(offset) > 0 {
+		_ = json.Unmarshal(offset, &start)
+	}
+	if start >= len(pts) {
+		return nil, nil, nil
+	}
+	end := min(start+limit, len(pts))
+	var next json.RawMessage
+	if end < len(pts) {
+		next = json.RawMessage(fmt.Sprintf("%d", end))
+	}
+	return pts[start:end], next, nil
+}
+
+func (f *Fake) UpsertPoints(_ context.Context, collection string, points []json.RawMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["UpsertPoints"]; err != nil {
+		return err
+	}
+	f.Points[collection] = append(f.Points[collection], points...)
+	info := f.Collections[collection]
+	info.PointsCount = uint64(len(f.Points[collection]))
+	f.Collections[collection] = info
+	return nil
 }
 
 func (f *Fake) GetCollection(_ context.Context, name string) (CollectionInfo, error) {

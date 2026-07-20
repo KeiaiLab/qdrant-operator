@@ -71,7 +71,8 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 	qc := r.QdrantClientFor(cluster)
-	name := col.TargetCollectionName()
+	// 물리/논리 분리(§9.2): ensure/adopt/삭제/alias 는 모두 physical(activeCollection)을 키로.
+	name := physicalName(col)
 
 	// 삭제 경로 — onDelete=Delete 로 부착된 파이널라이저만 처리한다.
 	if !col.DeletionTimestamp.IsZero() {
@@ -102,24 +103,22 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
+	// 진행 중 리샤드 워크플로 최우선 구동(§9.4).
+	if col.Status.Reshard != nil {
+		return r.reconcileReshard(ctx, col, cluster, qc)
+	}
+
 	info, err := qc.GetCollection(ctx, name)
 	if err != nil {
 		r.setDegraded(ctx, col, "QdrantUnreachable", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// ShardNumber nil = "라이브 값 채택"(R3-3 3중 opt-in 의 1겹): 생성이면 1, 존재하면
-	// 라이브 값을 그대로 목표로 삼아 불일치·리샤드 트리거가 생기지 않는다.
-	shardTarget := uint32(1)
-	if col.Spec.ShardNumber != nil {
-		shardTarget = *col.Spec.ShardNumber
-	} else if info.Exists {
-		shardTarget = info.ShardNumber
-	}
+	// ShardNumber nil = "라이브 값 채택"(3중 opt-in 의 1겹) — 불일치·리샤드 트리거 없음.
 	desired := qdrant.CollectionSpec{
 		VectorSize:        col.Spec.Vectors.Size,
 		Distance:          col.Spec.Vectors.Distance,
-		ShardNumber:       shardTarget,
+		ShardNumber:       resolvedShardNumber(col, info),
 		ReplicationFactor: col.Spec.ReplicationFactor,
 	}
 
@@ -131,6 +130,11 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		r.Recorder.Event(col, "Normal", "CollectionCreated", name)
 		col.Status.Adopted = false
+		col.Status.ActiveCollection = name
+		if err := r.ensureAlias(ctx, qc, col.Spec.Alias, name); err != nil {
+			r.setDegraded(ctx, col, "AliasFailed", err.Error())
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		return r.setReady(ctx, col, 0)
 
 	case paramsMatch(info, desired):
@@ -139,12 +143,30 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			col.Status.Adopted = true
 			r.Recorder.Event(col, "Normal", "CollectionAdopted", name)
 		}
+		col.Status.ActiveCollection = name
+		if err := r.ensureAlias(ctx, qc, col.Spec.Alias, name); err != nil {
+			r.setDegraded(ctx, col, "AliasFailed", err.Error())
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		return r.setReady(ctx, col, info.PointsCount)
+
+	case reshardable(info, col) && col.Spec.Reshard == qdrantv1alpha1.ReshardAuto && col.Spec.Alias != "":
+		// 3중 opt-in 충족(§9.1) — 단 전역 배타: 클러스터 이동/드레인 중이면 시작 유예(§2.2).
+		if r.clusterMoveActive(cluster) {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
+		return r.beginReshard(ctx, col, info)
+
+	case reshardable(info, col):
+		// shardNumber 단독 상이 — 해소 가능(리샤드 opt-in 안내), ParamsMismatch 와 상호배타.
+		r.setDegraded(ctx, col, "ReshardRequired",
+			fmt.Sprintf("shardNumber 상이(live %d / spec %d) — spec.alias 설정 + spec.reshard=Auto 로 opt-in 시 무중단 리샤드", info.ShardNumber, desired.ShardNumber))
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 
 	default:
 		// 파라미터 불일치 — 파괴적 재생성은 절대 하지 않고 Degraded 로만 알린다.
 		r.setDegraded(ctx, col, "ParamsMismatch", fmt.Sprintf(
-			"라이브 컬렉션 파라미터가 spec 과 다름 (live: size=%d distance=%s shards=%d repl=%d / spec: size=%d distance=%s shards=%d repl=%d) — 자동 재생성 금지, re-shard 워크플로 또는 spec 정합 필요",
+			"라이브 컬렉션 파라미터가 spec 과 다름 (live: size=%d distance=%s shards=%d repl=%d / spec: size=%d distance=%s shards=%d repl=%d) — 자동 재생성 금지",
 			info.VectorSize, info.Distance, info.ShardNumber, info.ReplicationFactor,
 			desired.VectorSize, desired.Distance, desired.ShardNumber, desired.ReplicationFactor))
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
