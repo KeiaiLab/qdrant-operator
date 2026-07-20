@@ -1013,6 +1013,9 @@ spec:
                     - type: integer
                     - type: string
                     default: 10Gi
+                    description: |-
+                      포인터여야 함 — non-pointer resource.Quantity(struct)는 omitempty 가 무효라 zero 값도 "0" 으로
+                      직렬화되어 타입 Go 클라이언트 생성 시 CRD default(10Gi) 미적용. nil 포인터여야 default 발동.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                   storageClassName:

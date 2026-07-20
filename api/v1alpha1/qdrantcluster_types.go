@@ -51,7 +51,9 @@ const (
 // PersistenceSpec은 Qdrant 데이터 볼륨 설정을 정의한다
 type PersistenceSpec struct {
 	// +kubebuilder:default="10Gi"
-	Size resource.Quantity `json:"size,omitempty"`
+	// 포인터여야 함 — non-pointer resource.Quantity(struct)는 omitempty 가 무효라 zero 값도 "0" 으로
+	// 직렬화되어 타입 Go 클라이언트 생성 시 CRD default(10Gi) 미적용. nil 포인터여야 default 발동.
+	Size *resource.Quantity `json:"size,omitempty"`
 	// +kubebuilder:default="ceph-rbd"
 	StorageClassName string `json:"storageClassName,omitempty"`
 	// +kubebuilder:default={ReadWriteOnce}

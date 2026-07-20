@@ -98,6 +98,11 @@ var _ = Describe("QdrantCluster Controller", func() {
 			Expect(fetched.Spec.Image.Tag).To(Equal("v1.18.2"))
 			Expect(fetched.Spec.Persistence.StorageClassName).To(Equal("ceph-rbd"))
 			Expect(fetched.Spec.RunAsUser).To(Equal(int64(1000)))
+			Expect(fetched.Spec.Persistence.Size).NotTo(BeNil()) // 리뷰 #1 회귀 가드
+			Expect(fetched.Spec.Persistence.Size.String()).To(Equal("10Gi"))
+
+			By("Cleanup the specific resource instance QdrantCluster")
+			Expect(k8sClient.Delete(ctx, fetched)).To(Succeed())
 		})
 	})
 })
