@@ -44,9 +44,15 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 				Type:          appsv1.RollingUpdateStatefulSetStrategyType,
 				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: ptrInt32(0)},
 			},
-			Selector: &metav1.LabelSelector{MatchLabels: Labels(qc)},
+			// selector 는 STS 불변 필드 — helm 차트 selector 와 동일한 SelectorLabels 를 써야
+			// 기존 helm-배포 STS 를 삭제 없이 제자리 채택(adoption)할 수 있다.
+			Selector: &metav1.LabelSelector{MatchLabels: SelectorLabels(qc)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: Labels(qc)},
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: SelectorLabels(qc),
+					// 설정(sha256) 변경 → 템플릿 해시 변경 → 자동 롤링 재기동 (helm 과 동일 의미).
+					Annotations: map[string]string{"checksum/config": ConfigChecksum(qc)},
+				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: SAName(qc),
 					// pod-level: fsGroup/fsGroupChangePolicy/seccompProfile — runAsUser 는 golden 상
@@ -60,7 +66,7 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 					Tolerations:  qc.Spec.Tolerations,
 					Affinity:     qc.Spec.Affinity,
 					Containers: []corev1.Container{{
-						Name:            "qdrant",
+						Name:            AppName,
 						Image:           image,
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						// golden: 인터프리터(/bin/bash -c)와 스크립트 경로를 command/args 로 분리.

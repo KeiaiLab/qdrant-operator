@@ -46,10 +46,25 @@ func ClientName(qc *qdrantv1alpha1.QdrantCluster) string    { return qc.Name }
 func ConfigMapName(qc *qdrantv1alpha1.QdrantCluster) string { return qc.Name }
 func SAName(qc *qdrantv1alpha1.QdrantCluster) string        { return qc.Name }
 
-func Labels(qc *qdrantv1alpha1.QdrantCluster) map[string]string {
+// SelectorLabels 는 STS.spec.selector / Service.spec.selector / 파드 템플릿 라벨에 쓰는 3종 —
+// helm qdrant 차트의 selector 와 정확히 일치시킨다(golden 실측). STS selector 는 불변 필드라
+// 이 집합이 helm 과 다르면 기존 helm-배포 STS 를 제자리 채택(adoption)할 수 없다. managed-by
+// 같은 가변 식별 라벨은 여기 넣지 않는다(넣는 순간 selector 불변성에 갇힌다).
+func SelectorLabels(qc *qdrantv1alpha1.QdrantCluster) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "qdrant",
-		"app.kubernetes.io/instance":   qc.Name,
-		"app.kubernetes.io/managed-by": "qdrant-operator",
+		"app":                        AppName,
+		"app.kubernetes.io/name":     AppName,
+		"app.kubernetes.io/instance": qc.Name,
 	}
+}
+
+// AppName — 라벨 값(app/app.kubernetes.io/name)과 컨테이너 이름이 공유하는 앱 식별자 SSOT.
+const AppName = "qdrant"
+
+// Labels 는 오브젝트 메타데이터(STS/Service/ConfigMap/SA 자체)용 — SelectorLabels + 소유 표식.
+// selector/파드 라벨에는 절대 쓰지 않는다(SelectorLabels 주석 참조).
+func Labels(qc *qdrantv1alpha1.QdrantCluster) map[string]string {
+	l := SelectorLabels(qc)
+	l["app.kubernetes.io/managed-by"] = "qdrant-operator"
+	return l
 }

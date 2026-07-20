@@ -1,12 +1,21 @@
 package resources
 
 import (
+	"crypto/sha256"
 	"fmt"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// ConfigChecksum 은 ConfigMap 데이터(initialize.sh + production.yaml)의 sha256 — STS 파드 템플릿
+// annotation(checksum/config)에 넣어 설정 변경 시 자동 롤링 재기동을 유발한다(helm 차트와 동일 의미).
+// 값 자체는 helm 의 해시(렌더된 매니페스트 기준)와 다르므로 helm→오퍼레이터 채택 시 1회 롤링이 발생한다.
+func ConfigChecksum(qc *qdrantv1alpha1.QdrantCluster) string {
+	h := sha256.Sum256([]byte(initScript(qc) + productionYAML(qc)))
+	return fmt.Sprintf("%x", h)
+}
 
 func initScript(qc *qdrantv1alpha1.QdrantCluster) string {
 	seed := fmt.Sprintf("http://%s-0.%s:%d", Name(qc), HeadlessName(qc), P2PPort)

@@ -19,7 +19,7 @@ func BuildHeadlessService(qc *qdrantv1alpha1.QdrantCluster) *corev1.Service {
 		Spec: corev1.ServiceSpec{
 			ClusterIP:                corev1.ClusterIPNone,
 			PublishNotReadyAddresses: true,
-			Selector:                 Labels(qc),
+			Selector:                 SelectorLabels(qc), // helm selector 와 동일 — 채택 시 엔드포인트 무변동
 			Ports:                    []corev1.ServicePort{port("http", RESTPort), port("grpc", GRPCPort), port("p2p", P2PPort)},
 		},
 	}
@@ -34,7 +34,7 @@ func BuildClientService(qc *qdrantv1alpha1.QdrantCluster) *corev1.Service {
 		ObjectMeta: metav1.ObjectMeta{Name: ClientName(qc), Namespace: qc.Namespace, Labels: Labels(qc), Annotations: qc.Spec.ServiceAnnotations},
 		Spec: corev1.ServiceSpec{
 			Type:     svcType,
-			Selector: Labels(qc),
+			Selector: SelectorLabels(qc), // helm selector 와 동일 — 채택 시 엔드포인트 무변동
 			// golden client Service(비-headless)도 p2p(6335)를 노출한다 — 실측 `helm get manifest` 정합.
 			Ports: []corev1.ServicePort{port("http", RESTPort), port("grpc", GRPCPort), port("p2p", P2PPort)},
 		},

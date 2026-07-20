@@ -164,9 +164,12 @@ func buildTestCluster() *qdrantv1alpha1.QdrantCluster {
 // TestParity 는 5 리소스 빌더 산출물을 golden 과 필드별로 비교한다. legit-differ(비교 제외 대상)는
 // 아래로 고정 — 어디에서도 assert 하지 않는다:
 //   - ServiceAccount/ConfigMap/Service(headless)/Service(client) 의 metadata.labels, metadata.namespace
-//   - Service(headless)/Service(client) 의 spec.selector
 //   - StatefulSet.spec.volumeClaimTemplates[0].metadata.labels
-//   - 그 외 모든 리소스의 labels/annotations/Helm·Flux 메타데이터 전반(checksum/config 등)
+//   - 오브젝트 metadata.labels/annotations 의 Helm·Flux 메타데이터(helm.sh/chart 등) 및 파드 템플릿
+//     annotation checksum/config 의 "값"(오퍼레이터는 자체 sha256 을 넣으므로 helm 해시와 다름)
+//
+// 반면 spec.selector(STS/Service)와 파드 템플릿 labels 는 **비교 대상** — helm 배포 STS 를 제자리
+// 채택(adoption)하려면 불변 selector 가 helm 과 정확히 일치해야 하기 때문(SelectorLabels).
 func TestParity(t *testing.T) {
 	golden := loadGolden(t)
 	qc := buildTestCluster()
@@ -225,8 +228,9 @@ func compareConfigMap(t *testing.T, got, want *corev1.ConfigMap) {
 }
 
 // compareServiceCore 는 headless/client Service 공통 기능 필드(name/type/clusterIP/
-// publishNotReadyAddresses/ports)를 비교한다. spec.selector 와 labels 는 legit-differ 제외 대상이라
-// 이 함수는 아예 건드리지 않는다.
+// publishNotReadyAddresses/selector/ports)를 비교한다. metadata.labels 만 legit-differ 제외.
+// spec.selector 는 라이브 helm Service 채택 시 엔드포인트 무변동을 보장해야 하므로 golden 과
+// 정확히 일치해야 한다.
 func compareServiceCore(t *testing.T, label string, got, want *corev1.Service) {
 	t.Helper()
 	d := diffFields{t}
@@ -234,6 +238,7 @@ func compareServiceCore(t *testing.T, label string, got, want *corev1.Service) {
 	d.equal(label+".spec.type", got.Spec.Type, want.Spec.Type)
 	d.equal(label+".spec.clusterIP", got.Spec.ClusterIP, want.Spec.ClusterIP)
 	d.equal(label+".spec.publishNotReadyAddresses", got.Spec.PublishNotReadyAddresses, want.Spec.PublishNotReadyAddresses)
+	d.equal(label+".spec.selector", got.Spec.Selector, want.Spec.Selector)
 	d.equal(label+".spec.ports", got.Spec.Ports, want.Spec.Ports)
 }
 
@@ -242,10 +247,11 @@ func compareServiceCore(t *testing.T, label string, got, want *corev1.Service) {
 //   - spec.replicas(golden=1 — 빌더가 CR.Spec.Replicas 를 그대로 반영하는지. 이 비교가 없으면
 //     replicas 변조가 parity 를 통과해버린다)
 //   - spec.podManagementPolicy/serviceName/updateStrategy
+//   - spec.selector + 파드 템플릿 labels(golden 과 정확 일치 — helm STS 제자리 채택의 전제.
+//     selector 는 STS 불변 필드라 여기서 어긋나면 adoption 이 불가능하다)
 //   - pod(compareStatefulSetPod) + 컨테이너(compareStatefulSetContainer, 컨테이너 name 포함) + VCT
 //
-// spec.selector 는 helm/오퍼레이터 라벨 스킴이 legit-differ 라 값 비교 대상이 아니다 — 대신 selector
-// 가 실제로 파드를 잡는지는 TestServiceSelectorTargetsPods 불변식이 별도로 지킨다.
+// selector ⊆ 파드 라벨 상호 정합은 TestServiceSelectorTargetsPods 불변식이 별도로 지킨다.
 func compareStatefulSet(t *testing.T, got, want *appsv1.StatefulSet) {
 	t.Helper()
 	d := diffFields{t}
@@ -254,6 +260,8 @@ func compareStatefulSet(t *testing.T, got, want *appsv1.StatefulSet) {
 	d.equal("StatefulSet.spec.replicas", got.Spec.Replicas, want.Spec.Replicas)
 	d.equal("StatefulSet.spec.podManagementPolicy", got.Spec.PodManagementPolicy, want.Spec.PodManagementPolicy)
 	d.equal("StatefulSet.spec.serviceName", got.Spec.ServiceName, want.Spec.ServiceName)
+	d.equal("StatefulSet.spec.selector", got.Spec.Selector, want.Spec.Selector)
+	d.equal("StatefulSet.spec.template.labels", got.Spec.Template.Labels, want.Spec.Template.Labels)
 	d.equal("StatefulSet.spec.updateStrategy", got.Spec.UpdateStrategy, want.Spec.UpdateStrategy)
 
 	compareStatefulSetPod(t, got.Spec.Template.Spec, want.Spec.Template.Spec)
