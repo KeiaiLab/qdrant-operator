@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 )
@@ -208,6 +209,43 @@ func (f *Fake) UpdateAliases(_ context.Context, actions []AliasAction) error {
 	}
 	f.AliasLog = append(f.AliasLog, actions)
 	return nil
+}
+
+// ── 테스트용 동시성 안전 세터 (러닝 매니저와의 동시 접근 레이스 방지) ──
+
+// SetPeers 는 클러스터 peer 목록을 교체한다(첫 peer 가 self).
+func (f *Fake) SetPeers(peers ...Peer) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.PeersList = append([]Peer(nil), peers...)
+	if len(peers) > 0 {
+		f.SelfPeerID = peers[0].ID
+	}
+}
+
+// SetCollection 은 컬렉션 메타를 직접 세팅한다(기존 컬렉션 채택 시나리오용).
+func (f *Fake) SetCollection(name string, info CollectionInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Collections[name] = info
+}
+
+// SetPlacement 는 컬렉션의 shard→peer 배치를 직접 세팅한다(분포 시나리오 주입용).
+func (f *Fake) SetPlacement(name string, pl map[uint32]uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := map[uint32]uint64{}
+	maps.Copy(cp, pl)
+	f.Placement[name] = cp
+}
+
+// Snapshot 헬퍼 — 검증용 읽기(복사 반환).
+func (f *Fake) GetPlacement(name string) map[uint32]uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := map[uint32]uint64{}
+	maps.Copy(cp, f.Placement[name])
+	return cp
 }
 
 var _ Client = (*Fake)(nil)

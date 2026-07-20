@@ -69,10 +69,11 @@ var _ = Describe("QdrantCollection Controller", func() {
 	})
 
 	It("파라미터가 일치하는 기존 컬렉션은 재생성 없이 채택한다", func() {
-		fakeQdrant.Collections["legacy1"] = qdrant.CollectionInfo{
+		fakeQdrant.SetCollection("legacy1", qdrant.CollectionInfo{
 			Exists: true, PointsCount: 928287,
 			VectorSize: 384, Distance: "Cosine", ShardNumber: 1, ReplicationFactor: 1,
-		}
+		})
+		fakeQdrant.SetPlacement("legacy1", map[uint32]uint64{0: 1})
 		Expect(k8sClient.Create(ctx, newCollectionCR("legacy1", 1, ""))).To(Succeed())
 
 		fetched := &qdrantv1alpha1.QdrantCollection{}
@@ -86,9 +87,9 @@ var _ = Describe("QdrantCollection Controller", func() {
 	})
 
 	It("파라미터 불일치는 Degraded 로 표면화하고 절대 재생성하지 않는다", func() {
-		fakeQdrant.Collections["mismatch1"] = qdrant.CollectionInfo{
+		fakeQdrant.SetCollection("mismatch1", qdrant.CollectionInfo{
 			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 4, ReplicationFactor: 1,
-		}
+		})
 		Expect(k8sClient.Create(ctx, newCollectionCR("mismatch1", 1, ""))).To(Succeed())
 
 		fetched := &qdrantv1alpha1.QdrantCollection{}
@@ -97,7 +98,8 @@ var _ = Describe("QdrantCollection Controller", func() {
 			return fetched.Status.Phase
 		}, "10s", "250ms").Should(Equal("Degraded"))
 		// 원본 무손상 + 재생성/삭제 시도 0.
-		Expect(fakeQdrant.Collections["mismatch1"].ShardNumber).To(Equal(uint32(4)))
+		mi, _ := fakeQdrant.GetCollection(ctx, "mismatch1")
+		Expect(mi.ShardNumber).To(Equal(uint32(4)))
 		Expect(fakeQdrant.Created).NotTo(ContainElement("mismatch1"))
 		Expect(fakeQdrant.Deleted).NotTo(ContainElement("mismatch1"))
 	})

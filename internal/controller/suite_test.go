@@ -98,13 +98,14 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
+	// 두 컨트롤러 모두 envtest 에는 실제 qdrant 가 없으므로 Fake 를 주입한다.
+	fakeQdrant = qdrant.NewFake()
 	Expect((&QdrantClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		QdrantClientFor: func(*qdrantv1alpha1.QdrantCluster) qdrant.Client { return fakeQdrant },
 	}).SetupWithManager(mgr)).To(Succeed())
 
-	// QdrantCollection 컨트롤러 — envtest 에는 실제 qdrant 가 없으므로 Fake 를 주입한다.
-	fakeQdrant = qdrant.NewFake()
 	Expect((&QdrantCollectionReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),

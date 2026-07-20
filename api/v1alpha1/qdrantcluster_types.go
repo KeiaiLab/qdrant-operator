@@ -95,12 +95,38 @@ type QdrantClusterSpec struct {
 }
 
 // QdrantClusterStatus defines the observed state of QdrantCluster.
+// PeerShards 는 한 peer 가 보유한 shard 수. Peer 는 qdrant peer id 의 십진 문자열 —
+// 실측상 peer id 가 int32 를 초과하는 큰 수라 CRD 스키마 호환을 위해 문자열로 보고한다.
+type PeerShards struct {
+	Peer   string `json:"peer"`
+	Shards int32  `json:"shards"`
+}
+
+// CollectionDistribution 은 컬렉션 1개의 peer 별 shard 분포 관측(B-2).
+type CollectionDistribution struct {
+	Collection string `json:"collection"`
+	// +optional
+	PerPeer []PeerShards `json:"perPeer,omitempty"`
+	// 진행 중 shard 전송 수 — 0 이 아닌 동안 rebalance/drain 은 새 이동을 발행하지 않는다.
+	// +optional
+	TransfersInFlight int32 `json:"transfersInFlight,omitempty"`
+}
+
 type QdrantClusterStatus struct {
 	Phase              string   `json:"phase,omitempty"`
 	Replicas           int32    `json:"replicas,omitempty"`
 	ReadyReplicas      int32    `json:"readyReplicas,omitempty"`
 	Peers              []string `json:"peers,omitempty"`
 	ObservedGeneration int64    `json:"observedGeneration,omitempty"`
+
+	// B-2 관측: 컬렉션별 peer 간 shard 분포. Running 상태에서 주기 갱신되며, steady-state
+	// 에서 오퍼레이터는 이 관측(GET) 외 어떤 행동도 하지 않는다.
+	// +optional
+	ShardDistribution []CollectionDistribution `json:"shardDistribution,omitempty"`
+	// B-3 계획 선노출: 실행 예정 이동("collection/shard: from->to"). 실행 전 항상 여기 먼저
+	// 나타난다(관측 가능성 원칙) — 비어 있으면 이동 없음.
+	// +optional
+	PlannedMoves []string `json:"plannedMoves,omitempty"`
 
 	// conditions represent the current state of the QdrantCluster resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.

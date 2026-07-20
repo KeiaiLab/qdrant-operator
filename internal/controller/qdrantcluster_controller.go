@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -33,6 +35,7 @@ import (
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
+	"github.com/keiailab/qdrant-operator/internal/qdrant"
 	resources "github.com/keiailab/qdrant-operator/internal/resources"
 )
 
@@ -47,6 +50,9 @@ type QdrantClusterReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// QdrantClientFor 는 대상 클러스터의 REST 클라이언트를 만든다(B-2 분포 관측·B-3/B-4 실행).
+	// 프로덕션은 client Service DNS 기반 HTTP, envtest 는 Fake 를 주입한다.
+	QdrantClientFor func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client
 }
 
 // +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantclusters,verbs=get;list;watch;create;update;patch;delete
@@ -179,6 +185,9 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	qc.Status.ReadyReplicas = live.Status.ReadyReplicas
 	qc.Status.ObservedGeneration = qc.Generation
 
+	// B-2 관측(GET only, best-effort) — 실패해도 reconcile 을 막지 않는다.
+	r.observeDistribution(ctx, qc)
+
 	ready := live.Status.ReadyReplicas == qc.Spec.Replicas && qc.Spec.Replicas > 0
 	if ready {
 		qc.Status.Phase = "Running"
@@ -197,8 +206,57 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	return ctrl.Result{}, nil
 }
 
+// observeDistribution 은 qdrant 관측(GET only)으로 status.Peers/ShardDistribution 을
+// 채운다(B-2). 순수 관측 — 어떤 쓰기도 발행하지 않으며, 실패는 조용히 스킵한다
+// (분포 보고는 best-effort, reconcile 진행을 막지 않는 것이 안전 기본값).
+func (r *QdrantClusterReconciler) observeDistribution(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster) {
+	if r.QdrantClientFor == nil {
+		return
+	}
+	qcl := r.QdrantClientFor(qc)
+	ci, err := qcl.ClusterInfo(ctx)
+	if err != nil {
+		return
+	}
+	peers := make([]string, 0, len(ci.Peers))
+	for _, p := range ci.Peers {
+		peers = append(peers, strconv.FormatUint(p.ID, 10))
+	}
+	qc.Status.Peers = peers
+
+	names, err := qcl.ListCollections(ctx)
+	if err != nil {
+		return
+	}
+	dist := make([]qdrantv1alpha1.CollectionDistribution, 0, len(names))
+	for _, name := range names {
+		cc, err := qcl.CollectionCluster(ctx, name)
+		if err != nil {
+			continue
+		}
+		counts := map[uint64]int32{}
+		for _, s := range cc.Shards {
+			counts[s.PeerID]++
+		}
+		d := qdrantv1alpha1.CollectionDistribution{Collection: name, TransfersInFlight: int32(len(cc.Transfers))}
+		// peer 순서는 ClusterInfo 정렬 순서(결정론) — 0 shard peer 도 표기해 불균형이 드러나게.
+		for _, p := range ci.Peers {
+			d.PerPeer = append(d.PerPeer, qdrantv1alpha1.PeerShards{Peer: strconv.FormatUint(p.ID, 10), Shards: counts[p.ID]})
+		}
+		dist = append(dist, d)
+	}
+	qc.Status.ShardDistribution = dist
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.QdrantClientFor == nil {
+		// 프로덕션 기본: 클러스터 client Service DNS (오퍼레이터가 클러스터 안에서 동작 전제).
+		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
+			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s.%s.svc:%d",
+				resources.ClientName(cluster), cluster.Namespace, resources.RESTPort))
+		}
+	}
 	// SA1019 억제 사유: 신규 GetEventRecorder 는 events.EventRecorder(k8s.io/client-go/tools/events)
 	// 를 반환하는데, 이는 구 record.EventRecorder 와 비등가다 — 평문 Event(obj,type,reason,msg) 가
 	// 없고 Eventf(regarding,related,type,reason,action,note,…) 만 있어 related 객체·action 인자가 새로

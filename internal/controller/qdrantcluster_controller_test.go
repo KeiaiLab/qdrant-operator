@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
+	"github.com/keiailab/qdrant-operator/internal/qdrant"
 )
 
 var _ = Describe("QdrantCluster Controller", func() {
@@ -205,5 +206,44 @@ var _ = Describe("QdrantCluster Controller", func() {
 			// STS 자체는 QdrantCluster의 controller-ref를 가져야 함 (대조군 — STS는 CR 삭제 시 함께 삭제됨)
 			Expect(metav1.GetControllerOf(sts).Kind).To(Equal("QdrantCluster"))
 		})
+	})
+})
+
+// B-2 분포 관측 — fake 에 2-peer 배치를 주입하면 status.shardDistribution 으로 보고된다.
+var _ = Describe("QdrantCluster 분포 관측 (B-2)", func() {
+	It("컬렉션별 peer 간 shard 분포를 status 로 보고한다", func() {
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 11, URI: "http://obs2-0.obs2-headless:6335/"},
+			qdrant.Peer{ID: 22, URI: "http://obs2-1.obs2-headless:6335/"},
+		)
+		fakeQdrant.SetCollection("obsvec", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 3, ReplicationFactor: 1,
+		})
+		fakeQdrant.SetPlacement("obsvec", map[uint32]uint64{0: 11, 1: 11, 2: 22})
+
+		Expect(k8sClient.Create(ctx, &qdrantv1alpha1.QdrantCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "obs2", Namespace: "default"},
+		})).To(Succeed())
+
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Eventually(func() int {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "obs2", Namespace: "default"}, fetched)
+			return len(fetched.Status.ShardDistribution)
+		}, "10s", "250ms").ShouldNot(BeZero())
+
+		var obsvec *qdrantv1alpha1.CollectionDistribution
+		for i := range fetched.Status.ShardDistribution {
+			if fetched.Status.ShardDistribution[i].Collection == "obsvec" {
+				obsvec = &fetched.Status.ShardDistribution[i]
+			}
+		}
+		Expect(obsvec).NotTo(BeNil(), "obsvec 분포가 보고돼야 함")
+		Expect(obsvec.PerPeer).To(HaveLen(2))
+		Expect(obsvec.PerPeer[0].Peer).To(Equal("11"))
+		Expect(obsvec.PerPeer[0].Shards).To(Equal(int32(2)))
+		Expect(obsvec.PerPeer[1].Peer).To(Equal("22"))
+		Expect(obsvec.PerPeer[1].Shards).To(Equal(int32(1)))
+		Expect(obsvec.TransfersInFlight).To(Equal(int32(0)))
+		Expect(fetched.Status.Peers).To(Equal([]string{"11", "22"}))
 	})
 })
