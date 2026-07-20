@@ -31,3 +31,4 @@ go.work
 
 # superpowers SDD scratch (task briefs/reports/progress — not part of source)
 .superpowers/
+.claude/
