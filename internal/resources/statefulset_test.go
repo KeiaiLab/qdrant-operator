@@ -53,4 +53,33 @@ func TestBuildStatefulSet(t *testing.T) {
 	if c.ReadinessProbe == nil {
 		t.Fatal("readinessProbe 누락")
 	}
+	// updateStrategy
+	if sts.Spec.UpdateStrategy.Type != appsv1.RollingUpdateStatefulSetStrategyType {
+		t.Fatalf("updateStrategy=%s", sts.Spec.UpdateStrategy.Type)
+	}
+	// VCT 스토리지 크기(10Gi) — Size 포인터 default 회귀 가드
+	if got := vct.Spec.Resources.Requests.Storage().String(); got != "10Gi" {
+		t.Fatalf("VCT size=%s (want 10Gi)", got)
+	}
+	// VCT accessModes
+	if len(vct.Spec.AccessModes) != 1 || vct.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+		t.Fatalf("accessModes=%v", vct.Spec.AccessModes)
+	}
+	// Command → initialize.sh 실행
+	if len(c.Command) < 3 || c.Command[len(c.Command)-1] != "/qdrant/config/initialize.sh" {
+		t.Fatalf("command=%v", c.Command)
+	}
+	// ConfigMap subPath 마운트 (initialize.sh + production.yaml)
+	var mInit, mProd bool
+	for _, vm := range c.VolumeMounts {
+		if vm.SubPath == "initialize.sh" {
+			mInit = true
+		}
+		if vm.SubPath == "production.yaml" {
+			mProd = true
+		}
+	}
+	if !mInit || !mProd {
+		t.Fatalf("subPath 마운트 누락: initialize.sh=%v production.yaml=%v", mInit, mProd)
+	}
 }
