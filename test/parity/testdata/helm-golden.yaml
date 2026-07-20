@@ -1,0 +1,265 @@
+---
+# Source: qdrant/charts/qdrant/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: qdrant
+    app.kubernetes.io/instance: platform-data-qdrant
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/version: v1.18.2
+    helm.sh/chart: qdrant-1.18.2
+    helm.toolkit.fluxcd.io/name: platform-data-qdrant
+    helm.toolkit.fluxcd.io/namespace: flux-system
+  name: platform-data-qdrant
+
+---
+# Source: qdrant/charts/qdrant/templates/configmap.yaml
+apiVersion: v1
+data:
+  initialize.sh: |
+    #!/bin/sh
+    echo "Soft limits"
+    ulimit -a -S
+    echo "Hard limits"
+    ulimit -a -H
+    ulimit -n $(ulimit -Hn)
+    SET_INDEX=${HOSTNAME##*-}
+    echo "Starting initializing for pod $SET_INDEX"
+    if [ "$SET_INDEX" = "0" ]; then
+      exec ./entrypoint.sh --uri 'http://platform-data-qdrant-0.platform-data-qdrant-headless:6335'
+    else
+      exec ./entrypoint.sh --bootstrap 'http://platform-data-qdrant-0.platform-data-qdrant-headless:6335' --uri 'http://platform-data-qdrant-'"$SET_INDEX"'.platform-data-qdrant-headless:6335'
+    fi
+  production.yaml: |
+    cluster:
+      consensus:
+        tick_period_ms: 100
+      enabled: true
+      p2p:
+        enable_tls: false
+        port: 6335
+    service:
+      enable_tls: false
+kind: ConfigMap
+metadata:
+  labels:
+    app: qdrant
+    app.kubernetes.io/instance: platform-data-qdrant
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/version: v1.18.2
+    helm.sh/chart: qdrant-1.18.2
+    helm.toolkit.fluxcd.io/name: platform-data-qdrant
+    helm.toolkit.fluxcd.io/namespace: flux-system
+  name: platform-data-qdrant
+
+---
+# Source: qdrant/charts/qdrant/templates/service-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: qdrant
+    app.kubernetes.io/component: cluster-discovery
+    app.kubernetes.io/instance: platform-data-qdrant
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/version: v1.18.2
+    helm.sh/chart: qdrant-1.18.2
+    helm.toolkit.fluxcd.io/name: platform-data-qdrant
+    helm.toolkit.fluxcd.io/namespace: flux-system
+  name: platform-data-qdrant-headless
+spec:
+  clusterIP: None
+  ports:
+  - name: http
+    port: 6333
+    protocol: TCP
+    targetPort: 6333
+  - name: grpc
+    port: 6334
+    protocol: TCP
+    targetPort: 6334
+  - name: p2p
+    port: 6335
+    protocol: TCP
+    targetPort: 6335
+  publishNotReadyAddresses: true
+  selector:
+    app: qdrant
+    app.kubernetes.io/instance: platform-data-qdrant
+    app.kubernetes.io/name: qdrant
+
+---
+# Source: qdrant/charts/qdrant/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: qdrant
+    app.kubernetes.io/instance: platform-data-qdrant
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/version: v1.18.2
+    helm.sh/chart: qdrant-1.18.2
+    helm.toolkit.fluxcd.io/name: platform-data-qdrant
+    helm.toolkit.fluxcd.io/namespace: flux-system
+  name: platform-data-qdrant
+spec:
+  ports:
+  - name: http
+    port: 6333
+    protocol: TCP
+    targetPort: 6333
+  - name: grpc
+    port: 6334
+    protocol: TCP
+    targetPort: 6334
+  - name: p2p
+    port: 6335
+    protocol: TCP
+    targetPort: 6335
+  selector:
+    app: qdrant
+    app.kubernetes.io/instance: platform-data-qdrant
+    app.kubernetes.io/name: qdrant
+  type: ClusterIP
+
+---
+# Source: qdrant/charts/qdrant/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: qdrant
+    app.kubernetes.io/instance: platform-data-qdrant
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/version: v1.18.2
+    helm.sh/chart: qdrant-1.18.2
+    helm.toolkit.fluxcd.io/name: platform-data-qdrant
+    helm.toolkit.fluxcd.io/namespace: flux-system
+  name: platform-data-qdrant
+spec:
+  podManagementPolicy: Parallel
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant
+      app.kubernetes.io/instance: platform-data-qdrant
+      app.kubernetes.io/name: qdrant
+  serviceName: platform-data-qdrant-headless
+  template:
+    metadata:
+      annotations:
+        checksum/config: b668664d4ba3729e6e85db323aaaa526c413683846f592928c3cf1a41c9b7e56
+      labels:
+        app: qdrant
+        app.kubernetes.io/instance: platform-data-qdrant
+        app.kubernetes.io/name: qdrant
+    spec:
+      containers:
+      - args:
+        - ./config/initialize.sh
+        command:
+        - /bin/bash
+        - -c
+        env:
+        - name: QDRANT_INIT_FILE_PATH
+          value: /qdrant/init/.qdrant-initialized
+        image: docker.io/qdrant/qdrant:v1.18.2
+        imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sleep
+              - "3"
+        name: qdrant
+        ports:
+        - containerPort: 6333
+          name: http
+          protocol: TCP
+        - containerPort: 6334
+          name: grpc
+          protocol: TCP
+        - containerPort: 6335
+          name: p2p
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 6
+          httpGet:
+            path: /readyz
+            port: 6333
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsGroup: 2000
+          runAsNonRoot: true
+          runAsUser: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /qdrant/storage
+          name: qdrant-storage
+        - mountPath: /qdrant/config/initialize.sh
+          name: qdrant-config
+          subPath: initialize.sh
+        - mountPath: /qdrant/config/production.yaml
+          name: qdrant-config
+          subPath: production.yaml
+        - mountPath: /qdrant/snapshots
+          name: qdrant-snapshots
+        - mountPath: /qdrant/init
+          name: qdrant-init
+      initContainers: null
+      securityContext:
+        fsGroup: 3000
+        fsGroupChangePolicy: Always
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: platform-data-qdrant
+      volumes:
+      - configMap:
+          defaultMode: 493
+          name: platform-data-qdrant
+        name: qdrant-config
+      - emptyDir: {}
+        name: qdrant-snapshots
+      - emptyDir: {}
+        name: qdrant-init
+  updateStrategy:
+    rollingUpdate:
+      partition: 0
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - metadata:
+      labels:
+        app: qdrant
+      name: qdrant-storage
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      storageClassName: ceph-rbd
+
+
