@@ -84,4 +84,20 @@ var _ = Describe("QdrantCluster Controller", func() {
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
+
+	// spec을 비운 채 생성해도 kubebuilder default 마커가 CRD를 통해 채워지는지 검증
+	Context("When creating a resource with an empty spec", func() {
+		It("적용 시 spec default가 채워진다", func() {
+			qc := &qdrantv1alpha1.QdrantCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "def", Namespace: "default"},
+			}
+			Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+			fetched := &qdrantv1alpha1.QdrantCluster{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "def", Namespace: "default"}, fetched)).To(Succeed())
+			Expect(fetched.Spec.Replicas).To(Equal(int32(1)))
+			Expect(fetched.Spec.Image.Tag).To(Equal("v1.18.2"))
+			Expect(fetched.Spec.Persistence.StorageClassName).To(Equal("ceph-rbd"))
+			Expect(fetched.Spec.RunAsUser).To(Equal(int64(1000)))
+		})
+	})
 })
