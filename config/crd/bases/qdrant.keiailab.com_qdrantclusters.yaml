@@ -1022,6 +1022,18 @@ spec:
                     default: ceph-rbd
                     type: string
                 type: object
+              rebalance:
+                description: |-
+                  B-3 shard 재배치 제어 — 미지정 시 활성(enabled=true). enabled=false 는 dry-run
+                  (계획 status 노출만, 이동 미발행).
+                properties:
+                  enabled:
+                    default: true
+                    description: |-
+                      false 면 dry-run — 관측·계획(plannedMoves 노출)만 하고 이동을 발행하지 않는다.
+                      포인터인 이유: bool 은 false 를 "미지정"과 구별할 수 없다(omitempty 함정).
+                    type: boolean
+                type: object
               replicas:
                 default: 1
                 format: int32
@@ -1229,6 +1241,31 @@ spec:
               readyReplicas:
                 format: int32
                 type: integer
+              rebalance:
+                description: B-3 발행 이동 추적 — nil 이면 발행 중인 이동 없음.
+                properties:
+                  collection:
+                    type: string
+                  failureCount:
+                    description: 연속 실패 횟수 — 백오프 계산에 사용, 완료 관측 시 0 으로 리셋.
+                    format: int32
+                    type: integer
+                  fromPeer:
+                    type: string
+                  issuedAt:
+                    format: date-time
+                    type: string
+                  shardId:
+                    format: int32
+                    type: integer
+                  toPeer:
+                    type: string
+                required:
+                - collection
+                - fromPeer
+                - shardId
+                - toPeer
+                type: object
               replicas:
                 format: int32
                 type: integer
@@ -1244,7 +1281,6 @@ spec:
                     perPeer:
                       items:
                         description: |-
-                          QdrantClusterStatus defines the observed state of QdrantCluster.
                           PeerShards 는 한 peer 가 보유한 shard 수. Peer 는 qdrant peer id 의 십진 문자열 —
                           실측상 peer id 가 int32 를 초과하는 큰 수라 CRD 스키마 호환을 위해 문자열로 보고한다.
                         properties:

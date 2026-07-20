@@ -247,3 +247,82 @@ var _ = Describe("QdrantCluster 분포 관측 (B-2)", func() {
 		Expect(fetched.Status.Peers).To(Equal([]string{"11", "22"}))
 	})
 })
+
+// B-3 rebalance — envtest 에는 kubelet 이 없어 STS readyReplicas 가 스스로 오르지 않으므로
+// 테스트가 STS status 를 직접 패치해 ready 게이트를 연다(표준 envtest 트릭 — STS 컨트롤러
+// 부재라 패치 값이 유지되고, Owns(STS) watch 가 재-reconcile 을 트리거한다).
+var _ = Describe("QdrantCluster rebalance (B-3)", func() {
+	makeReady := func(name string, replicas int32) {
+		sts := &appsv1.StatefulSet{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, sts)
+		}, "10s", "250ms").Should(Succeed())
+		sts.Status.Replicas = replicas
+		sts.Status.ReadyReplicas = replicas
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+	}
+
+	It("불균형을 계획 선노출 후 동시 1건 이동으로 수렴시킨다", func() {
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 31, URI: "http://reb3-0.reb3-headless:6335/"},
+			qdrant.Peer{ID: 32, URI: "http://reb3-1.reb3-headless:6335/"},
+		)
+		fakeQdrant.SetCollection("rebvec", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 3, ReplicationFactor: 1,
+		})
+		fakeQdrant.SetPlacement("rebvec", map[uint32]uint64{0: 31, 1: 31, 2: 31}) // 3:0 불균형
+
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "reb3", Namespace: "default"}}
+		qc.Spec.Replicas = 2
+		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+		makeReady("reb3", 2)
+
+		// 수렴: 이동이 발행되고(동시 1건) 배치가 균형(2:1)에 도달, phase 는 Running 복귀.
+		Eventually(func() bool {
+			pl := fakeQdrant.GetPlacement("rebvec")
+			count := map[uint64]int{}
+			for _, p := range pl {
+				count[p]++
+			}
+			return count[31] == 2 && count[32] == 1
+		}, "20s", "250ms").Should(BeTrue(), "3:0 → 2:1 수렴해야 함")
+		Expect(fakeQdrant.Moves).To(HaveLen(1), "필요 이동은 정확히 1건(동시 1건·최소 이동)")
+		Expect(fakeQdrant.Moves[0]).To(Equal("rebvec/0:31->32"), "결정론 첫 이동")
+
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "reb3", Namespace: "default"}, fetched)
+			return fetched.Status.Phase
+		}, "15s", "250ms").Should(Equal("Running"))
+		Expect(fetched.Status.PlannedMoves).To(BeEmpty(), "균형 후 계획은 비어야 함")
+		Expect(fetched.Status.Rebalance).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
+	})
+
+	It("dry-run(enabled=false)은 계획만 노출하고 이동을 발행하지 않는다", func() {
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 41, URI: "http://reb3d-0.reb3d-headless:6335/"},
+			qdrant.Peer{ID: 42, URI: "http://reb3d-1.reb3d-headless:6335/"},
+		)
+		fakeQdrant.SetCollection("dryvec", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 2, ReplicationFactor: 1,
+		})
+		fakeQdrant.SetPlacement("dryvec", map[uint32]uint64{0: 41, 1: 41}) // 2:0 불균형
+
+		off := false
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "reb3d", Namespace: "default"}}
+		qc.Spec.Replicas = 2
+		qc.Spec.Rebalance = &qdrantv1alpha1.RebalanceSpec{Enabled: &off}
+		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+		makeReady("reb3d", 2)
+
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Eventually(func() []string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "reb3d", Namespace: "default"}, fetched)
+			return fetched.Status.PlannedMoves
+		}, "15s", "250ms").Should(ContainElement("dryvec/0: 41->42"), "dry-run 도 계획은 노출")
+		Consistently(func() []string {
+			return fakeQdrant.Moves
+		}, "3s", "500ms").ShouldNot(ContainElement(ContainSubstring("dryvec")), "dry-run 은 발행 금지")
+		Expect(fetched.Status.Phase).To(Equal("Running"))
+	})
+})

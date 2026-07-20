@@ -88,13 +88,38 @@ type QdrantClusterSpec struct {
 	// +kubebuilder:default=1000
 	RunAsUser int64 `json:"runAsUser,omitempty"`
 	// +kubebuilder:default=3000
-	FSGroup      int64               `json:"fsGroup,omitempty"`
+	FSGroup int64 `json:"fsGroup,omitempty"`
+	// B-3 shard 재배치 제어 — 미지정 시 활성(enabled=true). enabled=false 는 dry-run
+	// (계획 status 노출만, 이동 미발행).
+	// +optional
+	Rebalance *RebalanceSpec `json:"rebalance,omitempty"`
+
 	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
 	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
 	Affinity     *corev1.Affinity    `json:"affinity,omitempty"`
 }
 
 // QdrantClusterStatus defines the observed state of QdrantCluster.
+// RebalanceSpec 은 B-3 shard 재배치 동작 제어.
+type RebalanceSpec struct {
+	// false 면 dry-run — 관측·계획(plannedMoves 노출)만 하고 이동을 발행하지 않는다.
+	// 포인터인 이유: bool 은 false 를 "미지정"과 구별할 수 없다(omitempty 함정).
+	// +kubebuilder:default=true
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// RebalanceMoveStatus 는 발행된(진행 중일 수 있는) 이동 1건의 추적 상태.
+// peer id 는 uint64 전 범위라 문자열(십진)로 보고한다.
+type RebalanceMoveStatus struct {
+	Collection string       `json:"collection"`
+	ShardID    int32        `json:"shardId"`
+	FromPeer   string       `json:"fromPeer"`
+	ToPeer     string       `json:"toPeer"`
+	IssuedAt   *metav1.Time `json:"issuedAt,omitempty"`
+	// 연속 실패 횟수 — 백오프 계산에 사용, 완료 관측 시 0 으로 리셋.
+	FailureCount int32 `json:"failureCount,omitempty"`
+}
+
 // PeerShards 는 한 peer 가 보유한 shard 수. Peer 는 qdrant peer id 의 십진 문자열 —
 // 실측상 peer id 가 int32 를 초과하는 큰 수라 CRD 스키마 호환을 위해 문자열로 보고한다.
 type PeerShards struct {
@@ -127,6 +152,9 @@ type QdrantClusterStatus struct {
 	// 나타난다(관측 가능성 원칙) — 비어 있으면 이동 없음.
 	// +optional
 	PlannedMoves []string `json:"plannedMoves,omitempty"`
+	// B-3 발행 이동 추적 — nil 이면 발행 중인 이동 없음.
+	// +optional
+	Rebalance *RebalanceMoveStatus `json:"rebalance,omitempty"`
 
 	// conditions represent the current state of the QdrantCluster resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.

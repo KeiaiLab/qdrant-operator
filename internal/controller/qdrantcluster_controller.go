@@ -41,8 +41,9 @@ import (
 
 // condition 타입 / phase 값 상수 — QdrantCluster·QdrantCollection 컨트롤러 공용.
 const (
-	condReady    = "Ready"
-	condDegraded = "Degraded"
+	condReady       = "Ready"
+	condDegraded    = "Degraded"
+	condProgressing = "Progressing"
 )
 
 // QdrantClusterReconciler reconciles a QdrantCluster object
@@ -186,37 +187,54 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	qc.Status.ObservedGeneration = qc.Generation
 
 	// B-2 관측(GET only, best-effort) — 실패해도 reconcile 을 막지 않는다.
-	r.observeDistribution(ctx, qc)
+	obs := r.observe(ctx, qc)
 
 	ready := live.Status.ReadyReplicas == qc.Spec.Replicas && qc.Spec.Replicas > 0
-	if ready {
-		qc.Status.Phase = "Running"
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condReady, Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Progressing", Status: metav1.ConditionFalse, Reason: "Stable", Message: "안정 상태", ObservedGeneration: qc.Generation})
-	} else {
+	var requeue time.Duration
+	switch {
+	case !ready:
 		qc.Status.Phase = "Provisioning"
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Progressing", Status: metav1.ConditionTrue, Reason: "Provisioning", Message: "child 리소스 조정 중", ObservedGeneration: qc.Generation})
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionTrue, Reason: "Provisioning", Message: "child 리소스 조정 중", ObservedGeneration: qc.Generation})
+		requeue = 15 * time.Second
+
+	case obs == nil || len(obs.Peers) != int(qc.Spec.Replicas):
+		// ready 이나 qdrant 관측 실패 또는 peer 합류 미완(scale 직후 raft join 대기) —
+		// 계획·집행 없이 관측만 반복한다(B-3 ready 게이트).
+		qc.Status.Phase = phaseRunning
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condReady, Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionTrue, Reason: "PeersJoining", Message: "qdrant peer 합류/관측 대기", ObservedGeneration: qc.Generation})
+		requeue = 15 * time.Second
+
+	default:
+		// B-3: ready + peer 완비 — rebalance 스텝이 최종 phase 를 결정한다.
+		phase, d := r.reconcileRebalance(ctx, qc, obs, r.QdrantClientFor(qc))
+		qc.Status.Phase = phase
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condReady, Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
+		if phase == phaseRebalancing {
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionTrue, Reason: "Rebalancing", Message: "shard 재배치 진행 중", ObservedGeneration: qc.Generation})
+		} else {
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionFalse, Reason: "Stable", Message: "안정 상태", ObservedGeneration: qc.Generation})
+		}
+		requeue = d
 	}
+
 	if err := r.Status().Update(ctx, qc); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !ready {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-	}
-	return ctrl.Result{}, nil
+	return requeueOrNothing(requeue), nil
 }
 
-// observeDistribution 은 qdrant 관측(GET only)으로 status.Peers/ShardDistribution 을
-// 채운다(B-2). 순수 관측 — 어떤 쓰기도 발행하지 않으며, 실패는 조용히 스킵한다
-// (분포 보고는 best-effort, reconcile 진행을 막지 않는 것이 안전 기본값).
-func (r *QdrantClusterReconciler) observeDistribution(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster) {
+// observe 는 qdrant 관측(GET only)으로 status.Peers/ShardDistribution 을 채우고(B-2),
+// planner/executor 가 소비할 원시 스냅샷을 반환한다. 순수 관측 — 어떤 쓰기도 발행하지
+// 않으며, 실패 시 nil 반환(분포 보고는 best-effort, reconcile 진행을 막지 않는다).
+func (r *QdrantClusterReconciler) observe(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster) *observation {
 	if r.QdrantClientFor == nil {
-		return
+		return nil
 	}
 	qcl := r.QdrantClientFor(qc)
 	ci, err := qcl.ClusterInfo(ctx)
 	if err != nil {
-		return
+		return nil
 	}
 	peers := make([]string, 0, len(ci.Peers))
 	for _, p := range ci.Peers {
@@ -226,14 +244,16 @@ func (r *QdrantClusterReconciler) observeDistribution(ctx context.Context, qc *q
 
 	names, err := qcl.ListCollections(ctx)
 	if err != nil {
-		return
+		return nil
 	}
+	obs := &observation{Peers: ci.Peers, Collections: map[string]*qdrant.CollectionClusterInfo{}}
 	dist := make([]qdrantv1alpha1.CollectionDistribution, 0, len(names))
 	for _, name := range names {
 		cc, err := qcl.CollectionCluster(ctx, name)
 		if err != nil {
 			continue
 		}
+		obs.Collections[name] = cc
 		counts := map[uint64]int32{}
 		for _, s := range cc.Shards {
 			counts[s.PeerID]++
@@ -246,6 +266,7 @@ func (r *QdrantClusterReconciler) observeDistribution(ctx context.Context, qc *q
 		dist = append(dist, d)
 	}
 	qc.Status.ShardDistribution = dist
+	return obs
 }
 
 // SetupWithManager sets up the controller with the Manager.
