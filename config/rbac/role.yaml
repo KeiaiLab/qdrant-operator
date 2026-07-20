@@ -34,6 +34,7 @@ rules:
   - qdrant.keiailab.com
   resources:
   - qdrantclusters
+  - qdrantcollections
   verbs:
   - create
   - delete
@@ -46,7 +47,14 @@ rules:
   - qdrant.keiailab.com
   resources:
   - qdrantclusters/status
+  - qdrantcollections/status
   verbs:
   - get
   - patch
+  - update
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantcollections/finalizers
+  verbs:
   - update
