@@ -28,10 +28,12 @@ import (
 
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -84,6 +86,26 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	// Task 7: Eventually() 기반 비동기 assertion이 성립하려면 reconciler가 실제로 떠 있어야 한다.
+	// kubebuilder 기본 스캐폴드는 매니저를 만들지 않으므로(k8sClient만 제공) 여기서 직접 기동한다
+	// (kubebuilder webhook 튜토리얼과 동일한 표준 envtest 패턴).
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+		// 테스트에서 기본 :8080 metrics 포트 바인딩을 시도하지 않도록 비활성화(포트 충돌 방지).
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	Expect((&QdrantClusterReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)).To(Succeed())
+
+	go func() {
+		defer GinkgoRecover()
+		Expect(mgr.Start(ctx)).To(Succeed(), "매니저 기동 실패")
+	}()
 })
 
 var _ = AfterSuite(func() {

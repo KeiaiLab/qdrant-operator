@@ -5,9 +5,23 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - qdrant.keiailab.com
+  - ""
   resources:
-  - qdrantclusters
+  - configmaps
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
   verbs:
   - create
   - delete
@@ -19,9 +33,15 @@ rules:
 - apiGroups:
   - qdrant.keiailab.com
   resources:
-  - qdrantclusters/finalizers
+  - qdrantclusters
   verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
   - update
+  - watch
 - apiGroups:
   - qdrant.keiailab.com
   resources:
