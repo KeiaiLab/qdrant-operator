@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -29,17 +31,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
+	"github.com/keiailab/qdrant-operator/internal/qdrant"
 	resources "github.com/keiailab/qdrant-operator/internal/resources"
 )
 
 // condition 타입 / phase 값 상수 — QdrantCluster·QdrantCollection 컨트롤러 공용.
 const (
-	condReady    = "Ready"
-	condDegraded = "Degraded"
+	condReady       = "Ready"
+	condDegraded    = "Degraded"
+	condProgressing = "Progressing"
 )
 
 // QdrantClusterReconciler reconciles a QdrantCluster object
@@ -47,6 +53,9 @@ type QdrantClusterReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// QdrantClientFor 는 대상 클러스터의 REST 클라이언트를 만든다(B-2 분포 관측·B-3/B-4 실행).
+	// 프로덕션은 client Service DNS 기반 HTTP, envtest 는 Fake 를 주입한다.
+	QdrantClientFor func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client
 }
 
 // +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantclusters,verbs=get;list;watch;create;update;patch;delete
@@ -93,18 +102,22 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// immutable-drift 가드 (Task 9) — stsImmutableChanged는 ownerRef를 보지 않으므로 sts를
 		// 그대로 전달한다 (DeepCopy+SetControllerReference 불필요).
 		if stsImmutableChanged(liveSTS, sts) {
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재생성 필요(Phase A 미지원)", ObservedGeneration: qc.Generation})
-			r.Recorder.Event(qc, corev1.EventTypeWarning, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 Phase A에서 미지원")
+			// 관측-우선(R1-5): status 정지 방지 — immutable 대기 중에도 B-2 관측은 갱신한다.
+			_ = r.observe(ctx, qc)
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재조정 필요", ObservedGeneration: qc.Generation})
+			r.Recorder.Event(qc, corev1.EventTypeWarning, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 미지원")
+			if qc.Status.DrainStatus != nil { // 진행 중 드레인은 '일시중단' 을 명시(무경고 정지 금지)
+				qc.Status.DrainStatus.Message = "immutable-drift — STS 수동 재조정 대기, 드레인 일시중단"
+				qc.Status.Phase = phaseDraining
+			}
 			_ = r.Status().Update(ctx, qc)
 			return ctrl.Result{}, nil // STS Update 시도 안 함 (crash-loop 방지)
 		}
-		// scale-down 가드 (Task 10) — 같은 liveSTS 재사용. naive replica 감소는 최고 서수 peer와
-		// 그 shard를 유실시키므로(OSS는 자동 reshard 없음) Phase A는 scale-up만 허용한다.
+		// B-4 scale-in drain — 구 거부 가드를 안전 절차로 대체. 드레인 미완 구간에는 STS 를
+		// apply 하지 않아 현 replicas 가 유지되고(qc.Spec.Replicas 로 렌더된 sts 의 override 함정
+		// 회피), 이동/드롭 → RemovePeer(force=false) → 1 서수 축소 순서를 강제한다.
 		if liveSTS.Spec.Replicas != nil && qc.Spec.Replicas < *liveSTS.Spec.Replicas {
-			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ScaleDownRefused", Message: "분산 DB scale-down은 Phase A 미지원(shard 유실 위험) — Phase B의 안전 drain 필요", ObservedGeneration: qc.Generation})
-			r.Recorder.Event(qc, corev1.EventTypeWarning, "ScaleDownRefused", "scale-down 거부됨")
-			_ = r.Status().Update(ctx, qc)
-			return ctrl.Result{}, nil // STS Update 시도 안 함 (replica 유지)
+			return r.reconcileDrainCycle(ctx, qc, liveSTS)
 		}
 	}
 
@@ -175,30 +188,108 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	if err := r.Get(ctx, client.ObjectKeyFromObject(sts), live); err != nil {
 		return ctrl.Result{}, err
 	}
+	statusBefore := *qc.Status.DeepCopy()
 	qc.Status.Replicas = live.Status.Replicas
 	qc.Status.ReadyReplicas = live.Status.ReadyReplicas
 	qc.Status.ObservedGeneration = qc.Generation
+	// 정상(비-축소) 경로 진입 = 드레인 없음 — 정상 완료와 목표 상향 abort 를 이 한 지점이 흡수(R1-6).
+	qc.Status.DrainStatus = nil
+
+	// B-2 관측(GET only, best-effort) — 실패해도 reconcile 을 막지 않는다.
+	obs := r.observe(ctx, qc)
 
 	ready := live.Status.ReadyReplicas == qc.Spec.Replicas && qc.Spec.Replicas > 0
-	if ready {
-		qc.Status.Phase = "Running"
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condReady, Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Progressing", Status: metav1.ConditionFalse, Reason: "Stable", Message: "안정 상태", ObservedGeneration: qc.Generation})
-	} else {
+	var requeue time.Duration
+	switch {
+	case !ready:
 		qc.Status.Phase = "Provisioning"
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: "Progressing", Status: metav1.ConditionTrue, Reason: "Provisioning", Message: "child 리소스 조정 중", ObservedGeneration: qc.Generation})
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionTrue, Reason: "Provisioning", Message: "child 리소스 조정 중", ObservedGeneration: qc.Generation})
+		requeue = 15 * time.Second
+
+	case obs == nil || len(obs.Peers) != int(qc.Spec.Replicas):
+		// ready 이나 qdrant 관측 실패 또는 peer 합류 미완(scale 직후 raft join 대기) —
+		// 계획·집행 없이 관측만 반복한다(B-3 ready 게이트).
+		qc.Status.Phase = phaseRunning
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condReady, Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionTrue, Reason: "PeersJoining", Message: "qdrant peer 합류/관측 대기", ObservedGeneration: qc.Generation})
+		requeue = 15 * time.Second
+
+	default:
+		// B-3: ready + peer 완비 — rebalance 스텝이 최종 phase 를 결정한다.
+		phase, d := r.reconcileRebalance(ctx, qc, obs, r.QdrantClientFor(qc))
+		qc.Status.Phase = phase
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condReady, Status: metav1.ConditionTrue, Reason: "AllReplicasReady", Message: "모든 replica 준비됨", ObservedGeneration: qc.Generation})
+		if phase == phaseRebalancing {
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionTrue, Reason: "Rebalancing", Message: "shard 재배치 진행 중", ObservedGeneration: qc.Generation})
+		} else {
+			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionFalse, Reason: "Stable", Message: "안정 상태", ObservedGeneration: qc.Generation})
+		}
+		requeue = d
 	}
-	if err := r.Status().Update(ctx, qc); err != nil {
-		return ctrl.Result{}, err
+
+	// self-trigger 방어(§5.2): status 가 실제로 변했을 때만 커밋 — steady-state 재기록 루프 차단.
+	if !apiequality.Semantic.DeepEqual(&statusBefore, &qc.Status) {
+		if err := r.Status().Update(ctx, qc); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
-	if !ready {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	return requeueOrNothing(requeue), nil
+}
+
+// observe 는 qdrant 관측(GET only)으로 status.Peers/ShardDistribution 을 채우고(B-2),
+// planner/executor 가 소비할 원시 스냅샷을 반환한다. 순수 관측 — 어떤 쓰기도 발행하지
+// 않으며, 실패 시 nil 반환(분포 보고는 best-effort, reconcile 진행을 막지 않는다).
+func (r *QdrantClusterReconciler) observe(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster) *observation {
+	if r.QdrantClientFor == nil {
+		return nil
 	}
-	return ctrl.Result{}, nil
+	qcl := r.QdrantClientFor(qc)
+	ci, err := qcl.ClusterInfo(ctx)
+	if err != nil {
+		return nil
+	}
+	peers := make([]string, 0, len(ci.Peers))
+	for _, p := range ci.Peers {
+		peers = append(peers, strconv.FormatUint(p.ID, 10))
+	}
+	qc.Status.Peers = peers
+
+	names, err := qcl.ListCollections(ctx)
+	if err != nil {
+		return nil
+	}
+	obs := &observation{Peers: ci.Peers, Collections: map[string]*qdrant.CollectionClusterInfo{}}
+	dist := make([]qdrantv1alpha1.CollectionDistribution, 0, len(names))
+	for _, name := range names {
+		cc, err := qcl.CollectionCluster(ctx, name)
+		if err != nil {
+			continue
+		}
+		obs.Collections[name] = cc
+		counts := map[uint64]int32{}
+		for _, s := range cc.Shards {
+			counts[s.PeerID]++
+		}
+		d := qdrantv1alpha1.CollectionDistribution{Collection: name, TransfersInFlight: int32(len(cc.Transfers))}
+		// peer 순서는 ClusterInfo 정렬 순서(결정론) — 0 shard peer 도 표기해 불균형이 드러나게.
+		for _, p := range ci.Peers {
+			d.PerPeer = append(d.PerPeer, qdrantv1alpha1.PeerShards{Peer: strconv.FormatUint(p.ID, 10), Shards: counts[p.ID]})
+		}
+		dist = append(dist, d)
+	}
+	qc.Status.ShardDistribution = dist
+	return obs
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.QdrantClientFor == nil {
+		// 프로덕션 기본: 클러스터 client Service DNS (오퍼레이터가 클러스터 안에서 동작 전제).
+		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
+			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s.%s.svc:%d",
+				resources.ClientName(cluster), cluster.Namespace, resources.RESTPort))
+		}
+	}
 	// SA1019 억제 사유: 신규 GetEventRecorder 는 events.EventRecorder(k8s.io/client-go/tools/events)
 	// 를 반환하는데, 이는 구 record.EventRecorder 와 비등가다 — 평문 Event(obj,type,reason,msg) 가
 	// 없고 Eventf(regarding,related,type,reason,action,note,…) 만 있어 related 객체·action 인자가 새로
@@ -208,7 +299,9 @@ func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// (manager/internal.go·leaderelection) 마이그레이션 대신 표적 억제한다.
 	r.Recorder = mgr.GetEventRecorderFor("qdrantcluster") //nolint:staticcheck // SA1019: 구 events API 유지 — 신규 GetEventRecorder 비등가(Event 미제공, action 필수)
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&qdrantv1alpha1.QdrantCluster{}).
+		// generation 변경(spec)만 트리거 — 자기 status 커밋으로 인한 재기록 루프 차단(§5.3).
+		// Owns(STS 등) 이벤트와 RequeueAfter 는 영향받지 않는다.
+		For(&qdrantv1alpha1.QdrantCluster{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).

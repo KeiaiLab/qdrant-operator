@@ -1022,6 +1022,18 @@ spec:
                     default: ceph-rbd
                     type: string
                 type: object
+              rebalance:
+                description: |-
+                  B-3 shard 재배치 제어 — 미지정 시 활성(enabled=true). enabled=false 는 dry-run
+                  (계획 status 노출만, 이동 미발행).
+                properties:
+                  enabled:
+                    default: true
+                    description: |-
+                      false 면 dry-run — 관측·계획(plannedMoves 노출)만 하고 이동을 발행하지 않는다.
+                      포인터인 이유: bool 은 false 를 "미지정"과 구별할 수 없다(omitempty 함정).
+                    type: boolean
+                type: object
               replicas:
                 default: 1
                 format: int32
@@ -1141,6 +1153,34 @@ spec:
           status:
             description: status defines the observed state of QdrantCluster
             properties:
+              activeMove:
+                description: 통합 lane — 발행 중 이동/드롭 1건(재배치·드레인 공유). nil = 발행 중 없음.
+                properties:
+                  collection:
+                    type: string
+                  drop:
+                    description: true = drop_replica(잉여 복제본 제거), false = move_shard(재배치).
+                    type: boolean
+                  fromPeer:
+                    type: string
+                  issuedAt:
+                    format: date-time
+                    type: string
+                  kind:
+                    description: Rebalance | Drain
+                    type: string
+                  shardId:
+                    format: int32
+                    type: integer
+                  toPeer:
+                    description: Drop 이면 무의미(잉여 복제본 드롭은 목적지가 없다).
+                    type: string
+                required:
+                - collection
+                - fromPeer
+                - kind
+                - shardId
+                type: object
               conditions:
                 description: |-
                   conditions represent the current state of the QdrantCluster resource.
@@ -1210,6 +1250,42 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              drainStatus:
+                description: B-4 scale-in drain 계획+진척. nil = 드레인 없음. 정상(비-축소) 경로 진입
+                  시 nil 정리.
+                properties:
+                  currentReplicas:
+                    format: int32
+                    type: integer
+                  message:
+                    type: string
+                  peers:
+                    description: 비워서 제거할 대상 peer(십진 문자열, 최고 서수 우선).
+                    items:
+                      type: string
+                    type: array
+                  pendingMoves:
+                    description: '"coll/shard: from->to" 또는 "coll/shard: drop@peer"
+                      — 실행 전 선노출.'
+                    items:
+                      type: string
+                    type: array
+                  startedAt:
+                    format: date-time
+                    type: string
+                  targetReplicas:
+                    format: int32
+                    type: integer
+                required:
+                - currentReplicas
+                - targetReplicas
+                type: object
+              moveBackoff:
+                description: |-
+                  이동/드롭 발행 실패·유실의 연속 횟수 — 백오프 입력. 완료 정산 시 0.
+                  (레코드가 아니라 스칼라라 lane 정산으로 레코드를 비워도 escalation 이 보존된다.)
+                format: int32
+                type: integer
               observedGeneration:
                 format: int64
                 type: integer
@@ -1219,12 +1295,53 @@ spec:
                 type: array
               phase:
                 type: string
+              plannedMoves:
+                description: |-
+                  B-3 계획 선노출: 실행 예정 이동("collection/shard: from->to"). 실행 전 항상 여기 먼저
+                  나타난다(관측 가능성 원칙) — 비어 있으면 이동 없음.
+                items:
+                  type: string
+                type: array
               readyReplicas:
                 format: int32
                 type: integer
               replicas:
                 format: int32
                 type: integer
+              shardDistribution:
+                description: |-
+                  B-2 관측: 컬렉션별 peer 간 shard 분포. Running 상태에서 주기 갱신되며, steady-state
+                  에서 오퍼레이터는 이 관측(GET) 외 어떤 행동도 하지 않는다.
+                items:
+                  description: CollectionDistribution 은 컬렉션 1개의 peer 별 shard 분포 관측(B-2).
+                  properties:
+                    collection:
+                      type: string
+                    perPeer:
+                      items:
+                        description: |-
+                          PeerShards 는 한 peer 가 보유한 shard 수. Peer 는 qdrant peer id 의 십진 문자열 —
+                          실측상 peer id 가 int32 를 초과하는 큰 수라 CRD 스키마 호환을 위해 문자열로 보고한다.
+                        properties:
+                          peer:
+                            type: string
+                          shards:
+                            format: int32
+                            type: integer
+                        required:
+                        - peer
+                        - shards
+                        type: object
+                      type: array
+                    transfersInFlight:
+                      description: 진행 중 shard 전송 수 — 0 이 아닌 동안 rebalance/drain 은 새
+                        이동을 발행하지 않는다.
+                      format: int32
+                      type: integer
+                  required:
+                  - collection
+                  type: object
+                type: array
             type: object
         required:
         - spec
@@ -1288,6 +1405,11 @@ spec:
               보장(ensure)·채택(adopt)한다. 파라미터 불일치 시 파괴적 재생성 대신 Degraded 로
               표면화한다(자동 재생성 절대 금지 — 설계 안전 원칙).
             properties:
+              alias:
+                description: |-
+                  Alias 는 소비자가 접근하는 논리 이름 — 설정 시 컨트롤러가 항상 라이브 물리 컬렉션에
+                  정렬한다. 무중단 리샤드 스왑의 전제(alias 없이는 shardNumber 변경이 Degraded 로만 표면화).
+                type: string
               clusterRef:
                 description: 같은 네임스페이스의 QdrantCluster 이름.
                 minLength: 1
@@ -1309,9 +1431,20 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              reshard:
+                default: Manual
+                description: |-
+                  Reshard 는 shardNumber 단독 상이 시 처리 정책 — 파괴적/고비용 동작의 명시 opt-in
+                  (onDelete=Retain 과 같은 안전 기본값 패턴).
+                enum:
+                - Manual
+                - Auto
+                type: string
               shardNumber:
-                default: 1
-                description: 생성 시 고정 — 이후 변경은 re-shard 워크플로(후속 마일스톤) 대상.
+                description: |-
+                  포인터화(R3-3) — nil 이면 "라이브 값 채택"(리샤드 트리거 아님): 생성 시 1, 채택 시
+                  라이브 shardNumber 그대로. 명시 설정 시에만 목표가 되며, 라이브와 단독 상이하면
+                  reshard 정책(Auto+alias 필요)에 따라 리샤드 워크플로 대상이 된다.
                 format: int32
                 minimum: 1
                 type: integer
@@ -1342,6 +1475,11 @@ spec:
           status:
             description: QdrantCollectionStatus — 관측 상태.
             properties:
+              activeCollection:
+                description: |-
+                  ActiveCollection 은 이 CR 을 현재 뒷받침하는 물리 컬렉션(alias 타깃) — 리샤드 성공
+                  스왑마다 갱신. 빈 값 = TargetCollectionName() 과 동일.
+                type: string
               adopted:
                 description: 채택(기존 컬렉션 인수) 여부 — true 면 이 CR 생성 이전부터 존재하던 컬렉션.
                 type: boolean
@@ -1413,6 +1551,41 @@ spec:
               pointsCount:
                 format: int64
                 type: integer
+              reshard:
+                description: 리샤드 워크플로 진행 — nil 이면 리샤드 없음.
+                properties:
+                  attempts:
+                    format: int32
+                    type: integer
+                  copiedPoints:
+                    format: int64
+                    type: integer
+                  cursor:
+                    description: scroll next_page_offset(JSON 인코딩) — 재개 커서.
+                    type: string
+                  phase:
+                    description: Preparing|Copying|Swapping|Finalizing|Failed|Blocked
+                    type: string
+                  shadowCollection:
+                    description: <physical>-rs-g<generation> — 시작 시 확정·고정(SSOT).
+                    type: string
+                  sourceCollection:
+                    type: string
+                  startedAt:
+                    format: date-time
+                    type: string
+                  targetShardNumber:
+                    format: int32
+                    type: integer
+                  totalPoints:
+                    format: int64
+                    type: integer
+                required:
+                - phase
+                - shadowCollection
+                - sourceCollection
+                - targetShardNumber
+                type: object
             type: object
         required:
         - spec

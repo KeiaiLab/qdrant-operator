@@ -4,7 +4,10 @@
 // 추가한다 (B-1: 컬렉션 조회/생성/삭제).
 package qdrant
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // CollectionSpec 은 컬렉션 생성 시 지정하는 파라미터 부분집합 — QdrantCollection CR 이
 // 관리·검증하는 필드만 담는다.
@@ -25,10 +28,24 @@ type CollectionInfo struct {
 	ReplicationFactor uint32
 }
 
-// Client 는 B-1 이 필요로 하는 최소 표면. 이후 마일스톤(B-2 분포 관측, B-3 move_shard,
-// B-4 remove peer, B-5 alias)에서 메서드를 증분 추가한다.
+// Client 는 컨트롤러가 쓰는 qdrant 표면 전체 — B-1(컬렉션 수명주기) + B-2(관측) +
+// B-3/B-4(이동·peer 제거) + B-5(alias 스왑).
 type Client interface {
+	// B-1 컬렉션 수명주기
 	GetCollection(ctx context.Context, name string) (CollectionInfo, error)
 	CreateCollection(ctx context.Context, name string, spec CollectionSpec) error
 	DeleteCollection(ctx context.Context, name string) error
+	// B-2 관측
+	ListCollections(ctx context.Context) ([]string, error)
+	ClusterInfo(ctx context.Context) (*ClusterInfo, error)
+	CollectionCluster(ctx context.Context, name string) (*CollectionClusterInfo, error)
+	// B-3/B-4 실행
+	MoveShard(ctx context.Context, collection string, shardID uint32, from, to uint64) error
+	DropReplica(ctx context.Context, collection string, shardID uint32, peerID uint64) error
+	RemovePeer(ctx context.Context, peerID uint64, force bool) error
+	// B-5 alias + 데이터 복사
+	UpdateAliases(ctx context.Context, actions []AliasAction) error
+	ListAliases(ctx context.Context) (map[string]string, error)
+	ScrollPoints(ctx context.Context, collection string, offset json.RawMessage, limit int) (points []json.RawMessage, next json.RawMessage, err error)
+	UpsertPoints(ctx context.Context, collection string, points []json.RawMessage) error
 }

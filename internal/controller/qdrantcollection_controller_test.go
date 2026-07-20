@@ -19,6 +19,8 @@ package controller
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -41,7 +43,7 @@ func newCollectionCR(name string, shard uint32, onDelete qdrantv1alpha1.Collecti
 		Spec: qdrantv1alpha1.QdrantCollectionSpec{
 			ClusterRef:        collectionTestCluster,
 			Vectors:           qdrantv1alpha1.VectorsSpec{Size: 384, Distance: "Cosine"},
-			ShardNumber:       shard,
+			ShardNumber:       &shard,
 			ReplicationFactor: 1,
 			OnDelete:          onDelete,
 		},
@@ -69,10 +71,11 @@ var _ = Describe("QdrantCollection Controller", func() {
 	})
 
 	It("파라미터가 일치하는 기존 컬렉션은 재생성 없이 채택한다", func() {
-		fakeQdrant.Collections["legacy1"] = qdrant.CollectionInfo{
+		fakeQdrant.SetCollection("legacy1", qdrant.CollectionInfo{
 			Exists: true, PointsCount: 928287,
 			VectorSize: 384, Distance: "Cosine", ShardNumber: 1, ReplicationFactor: 1,
-		}
+		})
+		fakeQdrant.SetPlacement("legacy1", map[uint32]uint64{0: 1})
 		Expect(k8sClient.Create(ctx, newCollectionCR("legacy1", 1, ""))).To(Succeed())
 
 		fetched := &qdrantv1alpha1.QdrantCollection{}
@@ -86,9 +89,9 @@ var _ = Describe("QdrantCollection Controller", func() {
 	})
 
 	It("파라미터 불일치는 Degraded 로 표면화하고 절대 재생성하지 않는다", func() {
-		fakeQdrant.Collections["mismatch1"] = qdrant.CollectionInfo{
+		fakeQdrant.SetCollection("mismatch1", qdrant.CollectionInfo{
 			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 4, ReplicationFactor: 1,
-		}
+		})
 		Expect(k8sClient.Create(ctx, newCollectionCR("mismatch1", 1, ""))).To(Succeed())
 
 		fetched := &qdrantv1alpha1.QdrantCollection{}
@@ -97,7 +100,8 @@ var _ = Describe("QdrantCollection Controller", func() {
 			return fetched.Status.Phase
 		}, "10s", "250ms").Should(Equal("Degraded"))
 		// 원본 무손상 + 재생성/삭제 시도 0.
-		Expect(fakeQdrant.Collections["mismatch1"].ShardNumber).To(Equal(uint32(4)))
+		mi, _ := fakeQdrant.GetCollection(ctx, "mismatch1")
+		Expect(mi.ShardNumber).To(Equal(uint32(4)))
 		Expect(fakeQdrant.Created).NotTo(ContainElement("mismatch1"))
 		Expect(fakeQdrant.Deleted).NotTo(ContainElement("mismatch1"))
 	})
@@ -129,5 +133,93 @@ var _ = Describe("QdrantCollection Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(info.Exists).To(BeTrue(), "Retain — 데이터 보존")
 		Expect(fakeQdrant.Deleted).NotTo(ContainElement("keepme1"))
+	})
+})
+
+// B-5 re-shard — shadow 복사 + alias 원자 스왑. 커밋점(스왑) 전 실패는 원본 무손상.
+// 순서 결합 금지(랜덤 컨테이너 순서): 자체 클러스터(rc5)를 각 spec 이 ensure 한다.
+var _ = Describe("QdrantCollection re-shard (B-5)", func() {
+	ensureCluster := func() {
+		err := k8sClient.Create(ctx, &qdrantv1alpha1.QdrantCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "rc5", Namespace: "default"},
+		})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			Expect(err).NotTo(HaveOccurred())
+		}
+	}
+	It("3중 opt-in(명시 shardNumber+Auto+alias) 충족 시 무중단 리샤드를 완주한다", func() {
+		fakeQdrant.SetCollection("oldvec", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 1, ReplicationFactor: 1,
+		})
+		fakeQdrant.SetPlacement("oldvec", map[uint32]uint64{0: 1})
+		fakeQdrant.SetPoints("oldvec", 300) // 배치 128 → 3 pass 복사
+
+		ensureCluster()
+		two := uint32(2)
+		cr := newCollectionCR("rsv5", 1, "")
+		cr.Spec.ClusterRef = "rc5"
+		cr.Spec.CollectionName = "oldvec"
+		cr.Spec.ShardNumber = &two
+		cr.Spec.Alias = "vecalias"
+		cr.Spec.Reshard = qdrantv1alpha1.ReshardAuto
+		Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+
+		fetched := &qdrantv1alpha1.QdrantCollection{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "rsv5", Namespace: "default"}, fetched)
+			return fetched.Status.Phase
+		}, "30s", "250ms").Should(Equal("Ready"), "리샤드 완주 후 Ready")
+
+		shadow := "oldvec-rs-g1"
+		Expect(fetched.Status.ActiveCollection).To(Equal(shadow), "진본이 shadow 로 전환")
+		Expect(fetched.Status.Reshard).To(BeNil(), "워크플로 정리")
+		aliases, _ := fakeQdrant.ListAliases(ctx)
+		Expect(aliases["vecalias"]).To(Equal(shadow), "alias 원자 스왑")
+		si, _ := fakeQdrant.GetCollection(ctx, shadow)
+		Expect(si.PointsCount).To(Equal(uint64(300)), "전량 복사")
+		Expect(si.ShardNumber).To(Equal(uint32(2)), "새 shard 수")
+		oi, _ := fakeQdrant.GetCollection(ctx, "oldvec")
+		Expect(oi.Exists).To(BeTrue(), "onDelete=Retain — 원본 보존")
+	})
+
+	It("게이트 미충족(shardNumber 상이 + alias 없음)은 ReshardRequired 로만 표면화한다", func() {
+		fakeQdrant.SetCollection("gated1", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 384, Distance: "Cosine", ShardNumber: 3, ReplicationFactor: 1,
+		})
+		ensureCluster()
+		g1 := newCollectionCR("gated1", 1, "")
+		g1.Spec.ClusterRef = "rc5"
+		Expect(k8sClient.Create(ctx, g1)).To(Succeed()) // 명시 shard 1 ≠ live 3, alias 없음
+
+		fetched := &qdrantv1alpha1.QdrantCollection{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "gated1", Namespace: "default"}, fetched)
+			c := meta.FindStatusCondition(fetched.Status.Conditions, "Degraded")
+			if c == nil {
+				return ""
+			}
+			return c.Reason
+		}, "10s", "250ms").Should(Equal("ReshardRequired"))
+		Expect(fakeQdrant.Created).NotTo(ContainElement(ContainSubstring("gated1-rs-")), "shadow 미생성")
+	})
+
+	It("size 상이는 ReshardRequired 가 아니라 ParamsMismatch 다 (상호배타)", func() {
+		fakeQdrant.SetCollection("sized1", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 768, Distance: "Cosine", ShardNumber: 1, ReplicationFactor: 1,
+		})
+		ensureCluster()
+		s1 := newCollectionCR("sized1", 1, "")
+		s1.Spec.ClusterRef = "rc5"
+		Expect(k8sClient.Create(ctx, s1)).To(Succeed()) // spec size 384 ≠ 768
+
+		fetched := &qdrantv1alpha1.QdrantCollection{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "sized1", Namespace: "default"}, fetched)
+			c := meta.FindStatusCondition(fetched.Status.Conditions, "Degraded")
+			if c == nil {
+				return ""
+			}
+			return c.Reason
+		}, "10s", "250ms").Should(Equal("ParamsMismatch"))
 	})
 })
