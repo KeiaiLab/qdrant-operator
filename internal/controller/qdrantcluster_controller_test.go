@@ -378,3 +378,56 @@ var _ = Describe("QdrantCluster scale subresource (KEDA 연동)", func() {
 		}, "5s", "250ms").Should(Equal(int32(2)))
 	})
 })
+
+var _ = Describe("QdrantCluster RF 재복제 (v0.4.0)", func() {
+	makeReady := func(name string, replicas int32) {
+		sts := &appsv1.StatefulSet{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, sts)
+		}, "10s", "250ms").Should(Succeed())
+		sts.Status.Replicas = replicas
+		sts.Status.ReadyReplicas = replicas
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+	}
+
+	It("RF2 미달 shard 를 자동 복제해 내구성을 수리한다", func() {
+		// peer ID 는 스펙별 고유 대역 의무 — 전역 Fake 잔존 컬렉션이 타 스펙 peers 와 겹치면
+		// (dr4 실측: drain 이 비우는 peer 를 rebalance 가 rfvec 으로 되채우는 영구 경쟁) 간섭한다.
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 61, URI: "http://rf1-0.rf1-headless:6335/"},
+			qdrant.Peer{ID: 62, URI: "http://rf1-1.rf1-headless:6335/"},
+		)
+		fakeQdrant.SetCollection("rfvec", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 4, Distance: "Cosine", ShardNumber: 2, ReplicationFactor: 2,
+		})
+		// count 균형(1:1)이지만 각 shard replica 1 < RF 2 — 리밸런스가 아닌 재복제가 발동해야 한다.
+		fakeQdrant.SetPlacement("rfvec", map[uint32]uint64{0: 61, 1: 62})
+
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "rf1", Namespace: "default"}}
+		qc.Spec.Replicas = 2
+		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+		makeReady("rf1", 2)
+
+		// 수렴: 두 shard 모두 replica 2 도달 (Replicated 기록 — 본 컬렉션 것만 집계).
+		Eventually(func() int {
+			n := 0
+			for _, m := range fakeQdrant.Replicated {
+				if strings.HasPrefix(m, "rfvec/") {
+					n++
+				}
+			}
+			return n
+		}, "25s", "250ms").Should(Equal(2), "shard 2개 각각 복제 1건씩")
+		Expect(fakeQdrant.Replicated).To(ContainElement("rfvec/0:61->62"), "결정론 첫 복제")
+		Expect(fakeQdrant.Replicated).To(ContainElement("rfvec/1:62->61"))
+
+		// RF 충족 후 재복제·리밸런스 무행동으로 Running 정착 + lane 정산.
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "rf1", Namespace: "default"}, fetched)
+			return fetched.Status.Phase
+		}, "15s", "250ms").Should(Equal("Running"))
+		Expect(fetched.Status.ActiveMove).To(BeNil())
+		Expect(fetched.Status.PlannedMoves).To(BeEmpty())
+	})
+})

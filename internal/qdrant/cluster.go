@@ -208,12 +208,32 @@ func (c *HTTPClient) CollectionCluster(ctx context.Context, name string) (*Colle
 
 // ── 이동/드레인/alias (B-3/B-4/B-5 실행 표면) ──
 
+// 반복 리터럴 상수(goconst) — 이동/복제/드롭 바디 공용 키와 shard 상태.
+const (
+	keyShardID       = "shard_id"
+	ShardStateActive = "Active"
+)
+
 // MoveShard 는 shard 1개를 from→to 로 이동한다(비동기 — 완료는 CollectionCluster 의
 // Transfers 소멸 + 배치 확인으로 관측). method 는 stream_records 고정(견고성 우선).
 func (c *HTTPClient) MoveShard(ctx context.Context, collection string, shardID uint32, from, to uint64) error {
 	body := map[string]any{
 		"move_shard": map[string]any{
-			"shard_id":     shardID,
+			keyShardID:     shardID,
+			"from_peer_id": from,
+			"to_peer_id":   to,
+			"method":       TransferMethodStreamRecords,
+		},
+	}
+	return c.doJSON(ctx, http.MethodPost, "/collections/"+collection+"/cluster", body, nil)
+}
+
+// ReplicateShard 는 shard 복제본을 from→to 로 추가 생성한다(원본 잔존 — RF 수리용,
+// 비동기 완료 관측은 MoveShard 와 동일). method 는 stream_records 고정.
+func (c *HTTPClient) ReplicateShard(ctx context.Context, collection string, shardID uint32, from, to uint64) error {
+	body := map[string]any{
+		"replicate_shard": map[string]any{
+			keyShardID:     shardID,
 			"from_peer_id": from,
 			"to_peer_id":   to,
 			"method":       TransferMethodStreamRecords,
@@ -226,7 +246,7 @@ func (c *HTTPClient) MoveShard(ctx context.Context, collection string, shardID u
 // 거부하지만, 컨트롤러는 발행 전 활성 replica>=2 를 관측으로 사전 확인해야 한다.
 func (c *HTTPClient) DropReplica(ctx context.Context, collection string, shardID uint32, peerID uint64) error {
 	body := map[string]any{
-		"drop_replica": map[string]any{"shard_id": shardID, "peer_id": peerID},
+		"drop_replica": map[string]any{keyShardID: shardID, "peer_id": peerID},
 	}
 	return c.doJSON(ctx, http.MethodPost, "/collections/"+collection+"/cluster", body, nil)
 }

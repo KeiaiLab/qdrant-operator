@@ -57,6 +57,9 @@ type QdrantClusterReconciler struct {
 	// QdrantClientFor 는 대상 클러스터의 REST 클라이언트를 만든다(B-2 분포 관측·B-3/B-4 실행).
 	// 프로덕션은 client Service DNS 기반 HTTP, envtest 는 Fake 를 주입한다.
 	QdrantClientFor func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client
+	// QdrantClientForPeer 는 특정 peer(STS ordinal) 직결 클라이언트 — shard 크기 관측 전용
+	// (remote shard 는 points_count 미제공이라 각 peer 의 local 관측 취합 필요, 설계 §①).
+	QdrantClientForPeer func(cluster *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client
 }
 
 // +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantclusters,verbs=get;list;watch;create;update;patch;delete
@@ -281,7 +284,51 @@ func (r *QdrantClusterReconciler) observe(ctx context.Context, qc *qdrantv1alpha
 		dist = append(dist, d)
 	}
 	qc.Status.ShardDistribution = dist
+
+	// v0.4.0 — RF 목표(qdrant 설정값, CR 채택 무관) + peer 별 shard 크기 지도.
+	obs.RF = map[string]uint32{}
+	for _, name := range names {
+		if info, err := qcl.GetCollection(ctx, name); err == nil {
+			obs.RF[name] = info.ReplicationFactor
+		}
+	}
+	obs.Sizes, obs.SizesComplete = r.collectSizes(ctx, qc, names, len(ci.Peers))
 	return obs
+}
+
+// collectSizes 는 각 peer(ordinal) 의 CollectionCluster 를 질의해 local shard 의
+// points_count 를 취합한다. local(s.PeerID==응답 peer_id) 값이 진실(0 포함)이고,
+// 비-local 값은 보조(>0 시 미확정 슬롯만 채움 — Fake 전역 뷰 호환). 어떤 질의든
+// 실패하면 complete=false — 호출자는 크기 단계를 통째로 스킵한다(부분 지도 오판 금지).
+func (r *QdrantClusterReconciler) collectSizes(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster, names []string, peerCount int) (map[string]map[uint32]uint64, bool) {
+	if r.QdrantClientForPeer == nil {
+		return nil, false
+	}
+	sizes := map[string]map[uint32]uint64{}
+	complete := true
+	for ord := range peerCount {
+		pcl := r.QdrantClientForPeer(qc, int32(ord))
+		for _, name := range names {
+			cc, err := pcl.CollectionCluster(ctx, name)
+			if err != nil {
+				complete = false
+				continue
+			}
+			if sizes[name] == nil {
+				sizes[name] = map[uint32]uint64{}
+			}
+			for _, s := range cc.Shards {
+				if s.PeerID == cc.PeerID {
+					sizes[name][s.ShardID] = s.PointsCount
+				} else if s.PointsCount > 0 {
+					if _, ok := sizes[name][s.ShardID]; !ok {
+						sizes[name][s.ShardID] = s.PointsCount
+					}
+				}
+			}
+		}
+	}
+	return sizes, complete
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -291,6 +338,13 @@ func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
 			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s.%s.svc:%d",
 				resources.ClientName(cluster), cluster.Namespace, resources.RESTPort))
+		}
+	}
+	if r.QdrantClientForPeer == nil {
+		// peer 직결: headless 파드 DNS — shard 크기 관측 전용(v0.4.0 설계 §①).
+		r.QdrantClientForPeer = func(cluster *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client {
+			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s-%d.%s.%s.svc:%d",
+				cluster.Name, ordinal, resources.HeadlessName(cluster), cluster.Namespace, resources.RESTPort))
 		}
 	}
 	// SA1019 억제 사유: 신규 GetEventRecorder 는 events.EventRecorder(k8s.io/client-go/tools/events)

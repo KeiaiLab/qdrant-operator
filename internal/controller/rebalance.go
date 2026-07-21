@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,15 +53,21 @@ type plannedMove struct {
 	To         uint64
 	// Drop=true 면 목적지 없는 잉여 복제본 드롭(drop_replica) — B-4 드레인 전용.
 	Drop bool
+	// Replicate=true 면 원본 잔존 복제 추가(replicate_shard) — RF 수리 전용(v0.4.0).
+	Replicate bool
 	// 정렬 키 스냅샷(후보 생성 시점의 donor/recipient shard 수)
 	fromCount int
 	toCount   int
 }
 
-// String 은 status 표기 — 이동 "coll/shard: from->to", 드롭 "coll/shard: drop@peer".
+// String 은 status 표기 — 이동 "coll/shard: from->to", 드롭 "coll/shard: drop@peer",
+// 복제 "coll/shard: +replica from->to".
 func (m plannedMove) String() string {
 	if m.Drop {
 		return fmt.Sprintf("%s/%d: drop@%d", m.Collection, m.ShardID, m.From)
+	}
+	if m.Replicate {
+		return fmt.Sprintf("%s/%d: +replica %d->%d", m.Collection, m.ShardID, m.From, m.To)
 	}
 	return fmt.Sprintf("%s/%d: %d->%d", m.Collection, m.ShardID, m.From, m.To)
 }
@@ -70,6 +77,14 @@ type observation struct {
 	Peers []qdrant.Peer // id 오름차순
 	// 컬렉션명 → 분포. Transfers 가 하나라도 있으면 클러스터 전역에서 새 이동 발행 금지.
 	Collections map[string]*qdrant.CollectionClusterInfo
+
+	// ── v0.4.0 확장 ──
+	// RF: 컬렉션 → qdrant 설정 replication_factor (재복제 목표 — CR 채택 여부 무관).
+	RF map[string]uint32
+	// Sizes: 컬렉션 → shardID → points. peer 별 local 관측 취합(remote 는 크기 미제공).
+	Sizes map[string]map[uint32]uint64
+	// SizesComplete=false 면 peer 관측 일부 실패 — 크기 단계 전체 스킵(부분 지도 오판 금지).
+	SizesComplete bool
 }
 
 // transfersInFlight 는 전 컬렉션의 진행 중 전송 수 합.
@@ -112,6 +127,10 @@ const (
 	phaseRunning       = "Running"
 	phaseDraining      = "Draining"
 	shardStateActive   = "Active"
+	kindReplicate      = "Replicate"
+	// 크기 가중 2차 기준 발동 임계(하드코드 — 설계 §① YAGNI): 비율과 절대차 모두 충족해야 이동.
+	sizeImbalanceRatio = 2.0
+	sizeMinDelta       = uint64(10_000)
 )
 
 // rebalanceEnabled — spec.rebalance.enabled 기본 true(활성). false = dry-run.
@@ -159,6 +178,10 @@ func activeMoveCompleted(obs *observation, am *qdrantv1alpha1.MoveStatus) bool {
 		if s.PeerID == from {
 			fromHolds = true
 		}
+	}
+	if am.Kind == kindReplicate {
+		// 복제 완료 = target 에 Active 등장. 원본은 잔존이 정상(fromHolds 무관).
+		return toActive
 	}
 	return toActive && !fromHolds
 }
@@ -212,9 +235,12 @@ func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdran
 		return 5 * time.Second
 	}
 	var err error
-	if mv.Drop {
+	switch {
+	case mv.Drop:
 		err = qcl.DropReplica(ctx, mv.Collection, mv.ShardID, mv.From)
-	} else {
+	case mv.Replicate:
+		err = qcl.ReplicateShard(ctx, mv.Collection, mv.ShardID, mv.From, mv.To)
+	default:
 		err = qcl.MoveShard(ctx, mv.Collection, mv.ShardID, mv.From, mv.To)
 	}
 	if err != nil {
@@ -225,8 +251,11 @@ func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdran
 		return backoff(qc.Status.MoveBackoff)
 	}
 	reason := "ShardMoveIssued"
-	if mv.Drop {
+	switch {
+	case mv.Drop:
 		reason = "ReplicaDropIssued"
+	case mv.Replicate:
+		reason = "ShardReplicateIssued"
 	}
 	r.Recorder.Event(qc, corev1.EventTypeNormal, reason, mv.String())
 	return 10 * time.Second
@@ -245,8 +274,13 @@ func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qd
 		return phaseRebalancing, 10 * time.Second
 	}
 
-	// 신선 재계획 + 선노출.
-	plan := planRebalance(obs)
+	// 신선 재계획 + 선노출 — 재복제(내구성) > 리밸런스(성능) 우선순위(설계 §②).
+	plan := planReplications(obs)
+	kind := kindReplicate
+	if len(plan) == 0 {
+		plan = planRebalance(obs)
+		kind = "Rebalance"
+	}
 	qc.Status.PlannedMoves = nil
 	for i, mv := range plan {
 		if i >= 10 { // status 크기 상한
@@ -262,9 +296,9 @@ func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qd
 		return phaseRunning, 5 * time.Minute
 	}
 	if !rebalanceEnabled(qc) {
-		return phaseRunning, 2 * time.Minute // dry-run: 계획만 노출
+		return phaseRunning, 2 * time.Minute // dry-run: 계획만 노출(재복제 포함 — 완전 수동 모드 일관)
 	}
-	return phaseRebalancing, r.issueActiveMove(ctx, qc, plan[0], "Rebalance", qcl)
+	return phaseRebalancing, r.issueActiveMove(ctx, qc, plan[0], kind, qcl)
 }
 
 // requeueOrNothing 은 phase 결과에 따른 ctrl.Result 조립 헬퍼.
@@ -359,5 +393,155 @@ func planRebalance(obs *observation) []plannedMove {
 		}
 		return strings.Compare(a.Collection, b.Collection) // 컬렉션명 오름차순
 	})
+	if len(plan) == 0 {
+		// count 균형(또는 distinct-peer 잔여) — 크기 가중 2차 단계(설계 §①).
+		return planSizeRebalance(obs)
+	}
+	return plan
+}
+
+// planSizeRebalance 는 count 균형 상태에서 peer 총 points 불균형(비율≥2 ∧ 절대차≥10k)
+// 을 고치는 이동 1건을 산출한다. 이동 후 max−min 이 엄격 감소하는 후보만 채택(과교정·
+// 진동 구조적 배제) — 관측 불완전(SizesComplete=false)이면 전체 스킵.
+func planSizeRebalance(obs *observation) []plannedMove {
+	if len(obs.Peers) < 2 || !obs.SizesComplete {
+		return nil
+	}
+	// peer 총 points (전 컬렉션 합산 — 배치 균형은 노드 단위 자원 문제).
+	total := map[uint64]uint64{}
+	for _, p := range obs.Peers {
+		total[p.ID] = 0
+	}
+	for coll, cc := range obs.Collections {
+		for _, s := range cc.Shards {
+			if _, known := total[s.PeerID]; known {
+				total[s.PeerID] += obs.Sizes[coll][s.ShardID]
+			}
+		}
+	}
+	spread := func(t map[uint64]uint64) uint64 {
+		var mx, mn uint64 = 0, ^uint64(0)
+		for _, v := range t {
+			mx, mn = max(mx, v), min(mn, v)
+		}
+		return mx - mn
+	}
+	var donor, recip uint64
+	var mx uint64
+	mn := ^uint64(0)
+	for _, p := range obs.Peers { // Peers 는 id 오름차순 — 동률 시 결정론
+		if total[p.ID] > mx {
+			mx, donor = total[p.ID], p.ID
+		}
+		if total[p.ID] < mn {
+			mn, recip = total[p.ID], p.ID
+		}
+	}
+	if donor == recip || mx-mn < sizeMinDelta || float64(mx) < sizeImbalanceRatio*float64(max(mn, 1)) {
+		return nil
+	}
+	// donor 보유 shard 중 recipient 에 replica 없고 이동 후 spread 가 엄격 감소하는 후보.
+	type cand struct {
+		coll      string
+		shardID   uint32
+		newSpread uint64
+	}
+	var best *cand
+	collNames := make([]string, 0, len(obs.Collections))
+	for name := range obs.Collections {
+		collNames = append(collNames, name)
+	}
+	slices.Sort(collNames)
+	for _, coll := range collNames {
+		cc := obs.Collections[coll]
+		holders := map[uint32]map[uint64]bool{}
+		for _, s := range cc.Shards {
+			if holders[s.ShardID] == nil {
+				holders[s.ShardID] = map[uint64]bool{}
+			}
+			holders[s.ShardID][s.PeerID] = true
+		}
+		for _, s := range cc.Shards {
+			if s.PeerID != donor || holders[s.ShardID][recip] {
+				continue
+			}
+			size := obs.Sizes[coll][s.ShardID]
+			t2 := maps.Clone(total)
+			t2[donor] -= size
+			t2[recip] += size
+			ns := spread(t2)
+			if ns >= mx-mn { // 엄격 감소 아님(빈 shard·과교정) — 배제
+				continue
+			}
+			if best == nil || ns < best.newSpread ||
+				(ns == best.newSpread && (coll < best.coll || (coll == best.coll && s.ShardID < best.shardID))) {
+				best = &cand{coll: coll, shardID: s.ShardID, newSpread: ns}
+			}
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return []plannedMove{{Collection: best.coll, ShardID: best.shardID, From: donor, To: recip}}
+}
+
+// planReplications 는 RF 부족 shard 의 복제 계획을 산출한다(내구성 수리 — 리밸런스보다
+// 우선). 목표 RF = qdrant 컬렉션 설정값(obs.RF). peers < RF 면 발행 불가(관측만) —
+// RF 초과분 자동 drop 은 없다(파괴 동작 불가 원칙).
+func planReplications(obs *observation) []plannedMove {
+	var plan []plannedMove
+	collNames := make([]string, 0, len(obs.Collections))
+	for name := range obs.Collections {
+		collNames = append(collNames, name)
+	}
+	slices.Sort(collNames)
+	for _, coll := range collNames {
+		rf := obs.RF[coll]
+		if rf < 2 || uint32(len(obs.Peers)) < rf {
+			continue
+		}
+		cc := obs.Collections[coll]
+		count := map[uint64]int{} // peer 별 이 컬렉션 shard 보유 수(target 선택 부하 기준)
+		for _, p := range obs.Peers {
+			count[p.ID] = 0
+		}
+		holders := map[uint32][]uint64{} // shardID → Active 보유 peer(오름차순 아님 — 후처리 정렬)
+		for _, s := range cc.Shards {
+			if _, known := count[s.PeerID]; known {
+				count[s.PeerID]++
+			}
+			if s.State == shardStateActive {
+				holders[s.ShardID] = append(holders[s.ShardID], s.PeerID)
+			}
+		}
+		shardIDs := make([]uint32, 0, len(holders))
+		for sid := range holders {
+			shardIDs = append(shardIDs, sid)
+		}
+		slices.Sort(shardIDs)
+		for _, sid := range shardIDs {
+			hs := holders[sid]
+			if uint32(len(hs)) >= rf {
+				continue
+			}
+			slices.Sort(hs)
+			source := hs[0] // 보유 최소 peerID — 결정론
+			// target: 미보유 peer 중 (shard 수, peerID) 오름차순 첫 번째.
+			var target uint64
+			found := false
+			for _, p := range obs.Peers {
+				if slices.Contains(hs, p.ID) {
+					continue
+				}
+				if !found || count[p.ID] < count[target] || (count[p.ID] == count[target] && p.ID < target) {
+					target, found = p.ID, true
+				}
+			}
+			if !found {
+				continue
+			}
+			plan = append(plan, plannedMove{Collection: coll, ShardID: sid, From: source, To: target, Replicate: true})
+		}
+	}
 	return plan
 }

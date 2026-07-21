@@ -153,3 +153,72 @@ func TestObservation_게이트헬퍼(t *testing.T) {
 		t.Fatal("비-Active shard 를 놓침")
 	}
 }
+
+func TestPlanReplications_RF부족복제(t *testing.T) {
+	// shard0 은 replica 1(부족), shard1 은 이미 RF 충족 — shard0 만 복제 계획.
+	o := obs([]uint64{1, 2}, map[string]map[uint32][]uint64{
+		"c": {0: {1}, 1: {1, 2}},
+	})
+	o.RF = map[string]uint32{"c": 2}
+	plan := planReplications(o)
+	if len(plan) != 1 {
+		t.Fatalf("복제 계획 1건이어야 함: %+v", plan)
+	}
+	mv := plan[0]
+	if !mv.Replicate || mv.ShardID != 0 || mv.From != 1 || mv.To != 2 {
+		t.Fatalf("복제 후보: %+v", mv)
+	}
+	if got := mv.String(); got != "c/0: +replica 1->2" {
+		t.Fatalf("표기: %s", got)
+	}
+
+	// peers < RF — 발행 불가(관측만).
+	o1 := obs([]uint64{1}, map[string]map[uint32][]uint64{"c": {0: {1}}})
+	o1.RF = map[string]uint32{"c": 2}
+	if p := planReplications(o1); len(p) != 0 {
+		t.Fatalf("peers<RF 인데 계획 발행: %+v", p)
+	}
+
+	// RF 1 — 대상 아님.
+	o.RF["c"] = 1
+	if p := planReplications(o); len(p) != 0 {
+		t.Fatalf("RF<2 인데 계획 발행: %+v", p)
+	}
+}
+
+func TestPlanSizeRebalance_크기2차기준(t *testing.T) {
+	// count 균형(2:2)이지만 크기 극단 불균형 — 2차 단계가 발동해야 한다.
+	o := obs([]uint64{1, 2}, map[string]map[uint32][]uint64{
+		"c": {0: {1}, 1: {1}, 2: {2}, 3: {2}},
+	})
+	o.SizesComplete = true
+	o.Sizes = map[string]map[uint32]uint64{"c": {0: 50_000, 1: 40_000, 2: 1_000, 3: 1_000}}
+	plan := planRebalance(o) // count 후보 없음 → 크기 단계 진입 경로 검증
+	if len(plan) != 1 {
+		t.Fatalf("크기 이동 1건이어야 함: %+v", plan)
+	}
+	mv := plan[0]
+	// shard1(40k) 이동 시 spread 90k-2k=88k → 8k, shard0(50k) 이동 시 12k — 효과 최대 후보.
+	if mv.From != 1 || mv.To != 2 || mv.ShardID != 1 {
+		t.Fatalf("효과 최대·결정론 후보(shard1, 1->2) 위반: %+v", mv)
+	}
+
+	// 관측 불완전 — 크기 단계 전체 스킵(안전 강등).
+	o.SizesComplete = false
+	if p := planRebalance(o); len(p) != 0 {
+		t.Fatalf("SizesComplete=false 인데 크기 이동 발행: %+v", p)
+	}
+
+	// 임계 미달(절대차 9k < 10k) — 무행동.
+	o.SizesComplete = true
+	o.Sizes = map[string]map[uint32]uint64{"c": {0: 5_000, 1: 5_000, 2: 500, 3: 500}}
+	if p := planRebalance(o); len(p) != 0 {
+		t.Fatalf("임계 미달인데 이동 발행: %+v", p)
+	}
+
+	// 과교정 배제 — 통짜 shard 하나뿐이라 어떤 이동도 spread 를 줄이지 못하면 무행동.
+	o.Sizes = map[string]map[uint32]uint64{"c": {0: 100_000, 1: 0, 2: 0, 3: 0}}
+	if p := planRebalance(o); len(p) != 0 {
+		t.Fatalf("개선 불가인데 이동 발행(진동 위험): %+v", p)
+	}
+}

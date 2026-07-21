@@ -41,6 +41,7 @@ type Client interface {
 	CollectionCluster(ctx context.Context, name string) (*CollectionClusterInfo, error)
 	// B-3/B-4 실행
 	MoveShard(ctx context.Context, collection string, shardID uint32, from, to uint64) error
+	ReplicateShard(ctx context.Context, collection string, shardID uint32, from, to uint64) error
 	DropReplica(ctx context.Context, collection string, shardID uint32, peerID uint64) error
 	RemovePeer(ctx context.Context, peerID uint64, force bool) error
 	// B-5 alias + 데이터 복사
