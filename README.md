@@ -108,3 +108,18 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 ## 라이선스
 
 Apache License 2.0.
+
+## 릴리스 (4채널 일관성)
+
+이 오퍼레이터는 네 곳에 동시에 발행된다 — **GitHub 태그 / 컨테이너 이미지 / ghcr OCI
+chart / 중앙 카탈로그**(ArtifactHub 크롤 대상). 수동 절차는 반드시 하나를 빠뜨리므로
+단일 명령으로 고정한다.
+
+```bash
+make release VERSION=0.7.0     # 게이트 → 태그 → 이미지 → chart → 카탈로그 → 검증
+make verify-publish            # 현재 상태의 4채널 일치만 검사
+DRY_RUN=1 hack/release.sh 0.7.0  # 발행 없이 단계 확인
+```
+
+`make release` 는 품질 게이트(test/lint/publish-scan)를 먼저 통과해야 진행하고,
+마지막에 `verify-publish` 로 4채널을 재확인한다 — 어느 하나라도 빠지면 실패한다.
