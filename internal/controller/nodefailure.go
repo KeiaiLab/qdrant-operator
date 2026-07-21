@@ -20,7 +20,7 @@ const nodeFailureGrace = 6 * time.Minute
 // reconcileStuckPods 는 죽은 노드에 갇힌 자기 STS 파드를 강제 삭제해 StatefulSet 이
 // 대체 파드를 만들 수 있게 한다(설계 docs/design/node-failure-recovery-design.md).
 //
-// 배경: 노드가 영구 사망하면 kubelet 부재로 파드 삭제가 확정되지 않고, StatefulSet 은
+// 배경: 노드가 영구 이탈하면 kubelet 부재로 파드 삭제가 확정되지 않고, StatefulSet 은
 // ordinal 단일성 보장 때문에 대체 파드를 만들지 않는다 — 서비스는 RF>=2 로 지속되나
 // replicas 가 조용히 줄어 HA 가 소실된다. 노드 taint(out-of-service)는 그 노드의 모든
 // 워크로드를 축출하는 전역 조치라, 오퍼레이터는 자기 파드만 정리한다(영향 국소화).

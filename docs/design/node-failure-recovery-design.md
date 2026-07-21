@@ -1,6 +1,6 @@
 # 노드 장애 파드 자동 정리 설계 (v0.6.0)
 
-> 실측 갭: 노드가 영구 사망하면 StatefulSet 파드가 Terminating/Unknown 으로 갇히고
+> 실측 갭: 노드가 영구 이탈하면 StatefulSet 파드가 Terminating/Unknown 으로 갇히고
 > 대체 파드가 생성되지 않는다(ordinal 단일성 보장). 서비스는 RF2 로 지속되지만
 > replicas 2 → 실제 1 로 HA 가 조용히 소실된다.
 
@@ -53,5 +53,5 @@
 - envtest: 노드 객체 2개(Ready/NotReady) 생성 → NotReady 노드에 파드 배치 →
   ① grace 미달이면 미삭제 ② grace 초과면 삭제 ③ replicas=1 이면 미삭제
   ④ 노드 Ready 면 미삭제
-- 라이브: 정상 상태에서 무행동(노드 전부 Ready) 확인. 실제 노드 사망 재현은 불가하므로
+- 라이브: 정상 상태에서 무행동(노드 전부 Ready) 확인. 실제 노드 영구 이탈 재현은 불가하므로
   조건 판정을 envtest 로, 삭제 경로는 기존 force delete 실증(failover 474회)으로 근거.
