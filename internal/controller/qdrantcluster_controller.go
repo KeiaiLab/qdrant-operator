@@ -68,6 +68,8 @@ type QdrantClusterReconciler struct {
 // +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantcollections,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -92,6 +94,10 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	hsvc := resources.BuildHeadlessService(qc)
 	csvc := resources.BuildClientService(qc)
 	sts := resources.BuildStatefulSet(qc)
+
+	// 노드 장애로 갇힌 자기 파드 정리(v0.6.0) — StatefulSet 이 대체 파드를 만들 수 있게 한다.
+	// 인프라 층 복구라 관측/이동 lane 보다 앞선다(설계 node-failure-recovery-design.md).
+	r.reconcileStuckPods(ctx, qc)
 
 	children := []client.Object{sa, cm, hsvc, csvc}
 	// PDB 는 replicas>=2 에서만 생성한다(단일 파드 PDB = 노드 drain 영구 차단). 축소로

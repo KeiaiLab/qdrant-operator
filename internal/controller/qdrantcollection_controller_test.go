@@ -254,5 +254,11 @@ var _ = Describe("QdrantCollection RF 승격 채택 (v0.5.0)", func() {
 		}, "20s", "250ms").Should(Equal("Ready"), "RF 승격 요구는 ParamsMismatch 가 아니라 채택")
 		Expect(fetched.Status.Adopted).To(BeTrue())
 		Expect(fakeQdrant.Created).NotTo(ContainElement("rfadopt"), "채택이므로 재생성 금지")
+
+		// 전역 Fake 잔재 정리 — RF2 컬렉션을 남기면 다른 스펙(drain/rebalance)의 관측에
+		// 섞여 "RF 미달" 재복제 계획이 계속 발행되고 phase 가 Running 에 도달하지 못한다
+		// (dr4 실측 간섭). RF1 잔재는 무해하지만 RF>=2 는 반드시 치운다.
+		Expect(k8sClient.Delete(ctx, fetched)).To(Succeed())
+		Expect(fakeQdrant.DeleteCollection(ctx, "rfadopt")).To(Succeed())
 	})
 })
