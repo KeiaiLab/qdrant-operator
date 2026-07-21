@@ -24,6 +24,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
@@ -429,5 +431,36 @@ var _ = Describe("QdrantCluster RF 재복제 (v0.4.0)", func() {
 		}, "15s", "250ms").Should(Equal("Running"))
 		Expect(fetched.Status.ActiveMove).To(BeNil())
 		Expect(fetched.Status.PlannedMoves).To(BeEmpty())
+	})
+})
+
+var _ = Describe("QdrantCluster HA 자산 (v0.5.0)", func() {
+	It("replicas>=2 면 PDB 를 만들고, 1 로 줄이면 제거한다", func() {
+		key := types.NamespacedName{Name: "ha5", Namespace: "default"}
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+		qc.Spec.Replicas = 2
+		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, key, pdb)
+		}, "15s", "250ms").Should(Succeed(), "replicas=2 면 PDB 생성")
+		Expect(pdb.Spec.MinAvailable.IntValue()).To(Equal(1))
+		Expect(metav1.GetControllerOf(pdb).Kind).To(Equal("QdrantCluster"), "PDB 는 CR 소유(삭제 시 함께 정리)")
+
+		// STS 에도 soft anti-affinity 가 주입돼야 한다.
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, key, sts)).To(Succeed())
+		Expect(sts.Spec.Template.Spec.Affinity).NotTo(BeNil())
+		Expect(sts.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution).To(HaveLen(1))
+
+		// 1 로 축소하면 PDB 제거(단일 파드 PDB = drain 영구 차단 방지).
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Expect(k8sClient.Get(ctx, key, fetched)).To(Succeed())
+		fetched.Spec.Replicas = 1
+		Expect(k8sClient.Update(ctx, fetched)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, key, &policyv1.PodDisruptionBudget{}))
+		}, "20s", "250ms").Should(BeTrue(), "replicas=1 이면 PDB 제거")
 	})
 })

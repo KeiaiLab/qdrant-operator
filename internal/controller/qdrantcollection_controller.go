@@ -174,11 +174,18 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 }
 
 // paramsMatch 는 CR 이 관리하는 파라미터 부분집합만 대조한다.
+//
+// RF 만 예외적으로 "승격 허용" 비교다(live <= want): qdrant 는 기존 컬렉션의
+// replication_factor 를 바꿀 API 가 없고(PATCH 는 result:true 를 주면서 무시 — v1.18
+// 실측), 실질 내구성은 shard replica 수로 결정된다. 따라서 spec 이 라이브보다 큰 RF 를
+// 요구하면 mismatch(Degraded) 가 아니라 **채택 + 목표 상향**으로 처리하고, 실제 수렴은
+// 클러스터 컨트롤러의 자동 재복제(planReplications)가 담당한다. 축소(live > want)는
+// 여전히 불일치 — 자동 replica 제거는 파괴 동작이라 하지 않는다.
 func paramsMatch(live qdrant.CollectionInfo, want qdrant.CollectionSpec) bool {
 	return live.VectorSize == want.VectorSize &&
 		live.Distance == want.Distance &&
 		live.ShardNumber == want.ShardNumber &&
-		live.ReplicationFactor == want.ReplicationFactor
+		live.ReplicationFactor <= want.ReplicationFactor
 }
 
 func (r *QdrantCollectionReconciler) setReady(ctx context.Context, col *qdrantv1alpha1.QdrantCollection, points uint64) (ctrl.Result, error) {

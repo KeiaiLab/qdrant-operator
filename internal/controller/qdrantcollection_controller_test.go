@@ -223,3 +223,36 @@ var _ = Describe("QdrantCollection re-shard (B-5)", func() {
 		}, "10s", "250ms").Should(Equal("ParamsMismatch"))
 	})
 })
+
+var _ = Describe("QdrantCollection RF 승격 채택 (v0.5.0)", func() {
+	It("라이브 RF 가 spec 보다 작으면 Degraded 가 아니라 채택 + 목표 상향이다", func() {
+		// qdrant 는 기존 컬렉션 RF 변경 API 가 없다(PATCH no-op 실측) — CR 이 더 큰 RF 를
+		// 요구하면 채택하고, 실제 수렴은 클러스터 컨트롤러의 재복제가 맡는다.
+		fakeQdrant.SetCollection("rfadopt", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 8, Distance: "Cosine", ShardNumber: 2, ReplicationFactor: 1,
+		})
+		fakeQdrant.SetPlacement("rfadopt", map[uint32]uint64{0: 1, 1: 1})
+
+		col := &qdrantv1alpha1.QdrantCollection{ObjectMeta: metav1.ObjectMeta{Name: "rfadopt", Namespace: "default"}}
+		col.Spec.ClusterRef = "rfc5"
+		col.Spec.Vectors = qdrantv1alpha1.VectorsSpec{Size: 8, Distance: "Cosine"}
+		col.Spec.ReplicationFactor = 2 // 라이브(1) 보다 큼 = 승격 요구
+		two := uint32(2)
+		col.Spec.ShardNumber = &two
+		// 자체 클러스터 ensure(랜덤 컨테이너 순서 결합 금지 — B-5 스펙과 동일 패턴).
+		if err := k8sClient.Create(ctx, &qdrantv1alpha1.QdrantCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "rfc5", Namespace: "default"},
+		}); err != nil && !apierrors.IsAlreadyExists(err) {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(k8sClient.Create(ctx, col)).To(Succeed())
+
+		fetched := &qdrantv1alpha1.QdrantCollection{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "rfadopt", Namespace: "default"}, fetched)
+			return fetched.Status.Phase
+		}, "20s", "250ms").Should(Equal("Ready"), "RF 승격 요구는 ParamsMismatch 가 아니라 채택")
+		Expect(fetched.Status.Adopted).To(BeTrue())
+		Expect(fakeQdrant.Created).NotTo(ContainElement("rfadopt"), "채택이므로 재생성 금지")
+	})
+})

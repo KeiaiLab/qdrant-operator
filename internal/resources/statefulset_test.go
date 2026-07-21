@@ -6,6 +6,7 @@ import (
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -261,5 +262,55 @@ func TestBuildStatefulSet_Volumes(t *testing.T) {
 	}
 	if !vConfig || !vSnap || !vInit {
 		t.Fatalf("volumes 누락/타입불일치: config(configMap)=%v snapshots(emptyDir)=%v init(emptyDir)=%v", vConfig, vSnap, vInit)
+	}
+}
+
+// HA 기본값(v0.5.0) — replicas>=2 에서 soft anti-affinity 자동, 지정 시 존중, 1이면 없음.
+func TestBuildStatefulSet_HA기본_antiAffinity(t *testing.T) {
+	mk := func(replicas int32, aff *corev1.Affinity) *appsv1.StatefulSet {
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "ha", Namespace: "data"}}
+		qc.Spec.Replicas = replicas
+		qc.Spec.Image = qdrantv1alpha1.ImageSpec{Repository: "qdrant/qdrant", Tag: "v1.18.3"}
+		g := resource.MustParse("1Gi")
+		qc.Spec.Persistence = qdrantv1alpha1.PersistenceSpec{Size: &g, StorageClassName: "ceph-rbd"}
+		qc.Spec.Affinity = aff
+		return BuildStatefulSet(qc)
+	}
+	if a := mk(1, nil).Spec.Template.Spec.Affinity; a != nil {
+		t.Fatalf("replicas=1 은 anti-affinity 미주입이어야 함: %+v", a)
+	}
+	a := mk(2, nil).Spec.Template.Spec.Affinity
+	if a == nil || a.PodAntiAffinity == nil || len(a.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution) != 1 {
+		t.Fatalf("replicas=2 는 soft anti-affinity 자동 주입이어야 함: %+v", a)
+	}
+	term := a.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution[0]
+	if term.PodAffinityTerm.TopologyKey != "kubernetes.io/hostname" {
+		t.Fatalf("topologyKey: %s", term.PodAffinityTerm.TopologyKey)
+	}
+	if a.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		t.Fatal("required 는 노드 부족 시 스케줄 차단 — preferred 여야 함")
+	}
+	// 사용자 지정은 그대로 존중(덮어쓰기 금지).
+	user := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{}}
+	if got := mk(2, user).Spec.Template.Spec.Affinity; got != user {
+		t.Fatal("사용자 affinity 를 덮어씀")
+	}
+}
+
+func TestBuildPodDisruptionBudget(t *testing.T) {
+	mk := func(replicas int32) *policyv1.PodDisruptionBudget {
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "ha", Namespace: "data"}}
+		qc.Spec.Replicas = replicas
+		return BuildPodDisruptionBudget(qc)
+	}
+	if p := mk(1); p != nil {
+		t.Fatal("replicas=1 에 PDB 를 만들면 노드 drain 이 영구 차단된다")
+	}
+	p := mk(2)
+	if p == nil || p.Spec.MinAvailable == nil || p.Spec.MinAvailable.IntValue() != 1 {
+		t.Fatalf("replicas>=2 는 minAvailable=1 PDB: %+v", p)
+	}
+	if p.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != "ha" {
+		t.Fatalf("selector: %+v", p.Spec.Selector)
 	}
 }

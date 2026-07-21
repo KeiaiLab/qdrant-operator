@@ -24,6 +24,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -64,7 +65,9 @@ type QdrantClusterReconciler struct {
 
 // +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantclusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=qdrant.keiailab.com,resources=qdrantcollections,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -90,7 +93,16 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	csvc := resources.BuildClientService(qc)
 	sts := resources.BuildStatefulSet(qc)
 
-	for _, obj := range []client.Object{sa, cm, hsvc, csvc} {
+	children := []client.Object{sa, cm, hsvc, csvc}
+	// PDB 는 replicas>=2 에서만 생성한다(단일 파드 PDB = 노드 drain 영구 차단). 축소로
+	// nil 이 되면 기존 PDB 를 정리해 "1 파드인데 minAvailable=1" 잔존을 막는다.
+	if pdb := resources.BuildPodDisruptionBudget(qc); pdb != nil {
+		children = append(children, pdb)
+	} else {
+		stale := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: resources.PDBName(qc), Namespace: qc.Namespace}}
+		_ = r.Delete(ctx, stale) // NotFound 는 무시(멱등)
+	}
+	for _, obj := range children {
 		if err := r.applyOwned(ctx, qc, obj); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -285,11 +297,33 @@ func (r *QdrantClusterReconciler) observe(ctx context.Context, qc *qdrantv1alpha
 	}
 	qc.Status.ShardDistribution = dist
 
-	// v0.4.0 — RF 목표(qdrant 설정값, CR 채택 무관) + peer 별 shard 크기 지도.
+	// v0.4.0 — RF 목표(qdrant 설정값) + peer 별 shard 크기 지도.
 	obs.RF = map[string]uint32{}
 	for _, name := range names {
 		if info, err := qcl.GetCollection(ctx, name); err == nil {
 			obs.RF[name] = info.ReplicationFactor
+		}
+	}
+	// v0.5.0 — QdrantCollection CR 이 더 큰 RF 를 요구하면 그것이 목표다(HA 승격).
+	// qdrant 는 기존 컬렉션의 replication_factor 변경 API 가 없어(PATCH no-op 실측)
+	// 설정값은 1로 남지만, 실질 내구성은 replica 수이므로 CR spec 을 목표로 수렴시킨다.
+	cols := &qdrantv1alpha1.QdrantCollectionList{}
+	if err := r.List(ctx, cols, client.InNamespace(qc.Namespace)); err == nil {
+		for i := range cols.Items {
+			col := &cols.Items[i]
+			if col.Spec.ClusterRef != qc.Name || col.Spec.ReplicationFactor == 0 {
+				continue
+			}
+			target := col.Spec.CollectionName
+			if target == "" {
+				target = col.Name
+			}
+			if live := col.Status.ActiveCollection; live != "" {
+				target = live // 리샤드 후 물리 컬렉션 추적
+			}
+			if cur, ok := obs.RF[target]; ok && col.Spec.ReplicationFactor > cur {
+				obs.RF[target] = col.Spec.ReplicationFactor
+			}
 		}
 	}
 	obs.Sizes, obs.SizesComplete = r.collectSizes(ctx, qc, names, len(ci.Peers))

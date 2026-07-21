@@ -76,7 +76,7 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 					},
 					NodeSelector: qc.Spec.NodeSelector,
 					Tolerations:  qc.Spec.Tolerations,
-					Affinity:     qc.Spec.Affinity,
+					Affinity:     resolveAffinity(qc),
 					Containers: []corev1.Container{{
 						Name:            AppName,
 						Image:           image,
@@ -141,6 +141,27 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 					AccessModes:      qc.Spec.Persistence.AccessModes,
 					StorageClassName: &sc,
 					Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: *qc.Spec.Persistence.Size}}, // Size 는 포인터(default 발동) — apiserver 라운드트립 후 non-nil 보장
+				},
+			}},
+		},
+	}
+}
+
+// resolveAffinity 는 spec.affinity 를 그대로 존중하되, 미지정 + replicas>=2 이면 HA 기본값으로
+// soft(preferred) pod anti-affinity 를 주입한다 — 같은 노드에 복제본이 몰려 노드 1대 장애가
+// 전체 중단으로 번지는 것을 막는다. required 가 아닌 preferred 인 이유: 노드가 부족하면
+// 스케줄 자체가 막혀 오히려 가용성을 해치기 때문이다(단일 노드 클러스터 호환).
+func resolveAffinity(qc *qdrantv1alpha1.QdrantCluster) *corev1.Affinity {
+	if qc.Spec.Affinity != nil || qc.Spec.Replicas < 2 {
+		return qc.Spec.Affinity
+	}
+	return &corev1.Affinity{
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+				Weight: 100,
+				PodAffinityTerm: corev1.PodAffinityTerm{
+					LabelSelector: &metav1.LabelSelector{MatchLabels: SelectorLabels(qc)},
+					TopologyKey:   "kubernetes.io/hostname",
 				},
 			}},
 		},
