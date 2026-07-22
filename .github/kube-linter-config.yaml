@@ -40,12 +40,11 @@ checks:
     - privileged-container
     - privileged-ports
     - readiness-port
-    # required-annotation-email / required-label-owner are deferred
-    # until chart v0.7.0 introduces the sibling `ownership.*` values
-    # (owner label + email annotation on the controller Deployment,
-    # as in valkey-operator). Re-enable both together with that
-    # release — the current chart (v0.6.0, consumed live by Flux)
-    # must not change its rendered output in a docs/branding wave.
+    # Enforced from chart v0.7.0, which introduces the sibling
+    # `ownership.*` values (owner label + email annotation on the
+    # controller Deployment, as in valkey-operator).
+    - required-annotation-email
+    - required-label-owner
     - run-as-non-root
     - sensitive-host-mounts
     - ssh-port

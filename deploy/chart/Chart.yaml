@@ -4,14 +4,17 @@ description: A Kubernetes Operator for the Qdrant vector database — declarativ
 # 차트 타입: 오퍼레이터(컨트롤러 매니저) 워크로드
 type: application
 # 차트 버전 (SemVer 2) — 차트 자체의 릴리스 버전
-version: 0.6.0
+version: 0.7.0
 # 오퍼레이터(컨테이너 이미지)의 버전 — image.tag 미지정 시 기본값으로 사용
-appVersion: "v0.6.0"
+appVersion: "v0.7.0"
 kubeVersion: ">=1.29.0-0"
 annotations:
   artifacthub.io/category: database
   artifacthub.io/license: MIT
   artifacthub.io/operator: "true"
+  artifacthub.io/changes: |
+    - kind: added
+      description: "Add ownership.* values (owner label + email annotation) on the controller Deployment; re-enables kube-linter required-annotation-email / required-label-owner."
 keywords:
   - qdrant
   - operator
