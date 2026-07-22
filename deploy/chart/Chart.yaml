@@ -1,6 +1,6 @@
 apiVersion: v2
 name: qdrant-operator
-description: QdrantCluster 커스텀 리소스를 조정하는 qdrant-operator 배포용 Helm 차트
+description: A Kubernetes Operator for the Qdrant vector database — declarative QdrantCluster provisioning, distributed (Raft) clusters, scale-out. MIT licensed.
 # 차트 타입: 오퍼레이터(컨트롤러 매니저) 워크로드
 type: application
 # 차트 버전 (SemVer 2) — 차트 자체의 릴리스 버전
@@ -10,7 +10,7 @@ appVersion: "v0.6.0"
 kubeVersion: ">=1.29.0-0"
 annotations:
   artifacthub.io/category: database
-  artifacthub.io/license: Apache-2.0
+  artifacthub.io/license: MIT
   artifacthub.io/operator: "true"
 keywords:
   - qdrant
@@ -22,3 +22,5 @@ sources:
   - https://github.com/keiailab/qdrant-operator
 maintainers:
   - name: keiailab
+# 브랜드 심볼 — ArtifactHub 패키지 아이콘(렌더링 무관 메타데이터). SSOT = docs/branding/symbol.png
+icon: https://raw.githubusercontent.com/KeiaiLab/qdrant-operator/main/docs/branding/symbol.png

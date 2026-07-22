@@ -1,0 +1,51 @@
+# kube-linter configuration for qdrant-operator
+# Reference: https://docs.kubelinter.io/
+
+checks:
+  doNotAutoAddDefaults: false
+  exclude:
+    # The operator legitimately requires cluster-scoped RBAC
+    # (ClusterRole + binding) to reconcile QdrantCluster resources
+    # across namespaces, so this ownership antipattern check does not
+    # apply to the operator's own control-plane manifests.
+    - cluster-admin-role-binding
+  include:
+    # Production-grade defaults that should hold across every
+    # rendered manifest of the chart.
+    - dangling-service
+    - default-service-account
+    - deprecated-service-account-field
+    - drop-net-raw-capability
+    - duplicate-env-var
+    - env-var-secret
+    - exposed-services
+    - host-ipc
+    - host-network
+    - host-pid
+    - latest-tag
+    - liveness-port
+    - mismatching-selector
+    - no-anti-affinity
+    - no-extensions-v1beta
+    - no-liveness-probe
+    - no-read-only-root-fs
+    - no-readiness-probe
+    - non-existent-service-account
+    - privilege-escalation-container
+    - privileged-container
+    - privileged-ports
+    - readiness-port
+    - required-annotation-email
+    - required-label-owner
+    - run-as-non-root
+    - sensitive-host-mounts
+    - ssh-port
+    - unsafe-proc-mount
+    - unsafe-sysctls
+    - unset-cpu-requirements
+    - unset-memory-requirements
+    - use-namespace
+    - wildcard-in-rules
+    - writable-host-mount
+
+customChecks: []

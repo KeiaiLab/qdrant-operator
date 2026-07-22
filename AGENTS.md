@@ -301,6 +301,20 @@ export IMG=<registry>/<project>:<version>
 make docker-build docker-push IMG=$IMG
 ```
 
+## Branding & i18n
+
+### Branding assets (`docs/branding/`)
+
+- `docs/branding/base-symbol.png` — the shared keiailab base symbol (460×460, byte-identical across the operator family). The outer three-colour rotating-arrow ring is **inviolable**: never recolor, redraw, filter, or shadow it.
+- `docs/branding/symbol.png` — this project's logo: the base-symbol ring with **only the central glyph** (a k-NN vector "constellation") composited into the central clear zone. Regenerate by swapping the central glyph only, keeping the ring pixels untouched (460×460 RGBA). Full grammar: [`docs/BRANDING.md`](docs/BRANDING.md) §2.1.
+- Palette SSOT: teal `#0EA5A8` / navy `#0F172A` / amber `#F59E0B` (see `docs/BRANDING.md` §3). The Helm `Chart.yaml` `icon:` field points at the raw `symbol.png` URL.
+
+### i18n (filename-suffix standard)
+
+- Docs use the **filename-suffix** convention: `<name>.<lang>.md` (e.g. `README.ko.md`, `README.ja.md`, `README.zh.md`). The unsuffixed file (`README.md`) is the **English canonical** source of truth; the family i18n SSOT is `keiailab-commons/docs/i18n/README.md`.
+- Each localized file starts with the language-switcher line linking back to the English canonical and the sibling translations.
+- At release time, regenerate/refresh translations and the `CHANGELOG.md` alongside the English source — do not let a translated doc drift behind its canonical.
+
 ## References
 
 ### Essential Reading

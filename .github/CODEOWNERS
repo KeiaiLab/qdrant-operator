@@ -1,0 +1,24 @@
+# Directory/file-to-reviewer mapping for qdrant-operator.
+# Format: <pattern> <owner>
+# Reference: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything in the repository.
+* @keiailab/maintainers
+
+# Core domain
+/api/                       @keiailab/maintainers
+/cmd/                       @keiailab/maintainers
+/internal/                  @keiailab/maintainers
+
+# Build / deploy
+/deploy/                    @keiailab/maintainers
+/config/                    @keiailab/maintainers
+/.github/                   @keiailab/maintainers
+/Dockerfile                 @keiailab/maintainers
+/Makefile                   @keiailab/maintainers
+
+# Docs / governance
+/docs/                      @keiailab/maintainers
+/README.md                  @keiailab/maintainers
+/AGENTS.md                  @keiailab/maintainers
+/PROJECT                    @keiailab/maintainers

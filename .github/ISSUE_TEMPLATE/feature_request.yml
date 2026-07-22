@@ -1,0 +1,128 @@
+name: Feature request
+description: Suggest an idea for the Qdrant Operator
+title: '[FEATURE] '
+labels: ['enhancement', 'triage']
+assignees: ''
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your interest in improving the Qdrant Operator!
+        Before creating a feature request, please check existing issues and the [roadmap](https://github.com/keiailab/qdrant-operator#roadmap).
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      description: Please confirm the following before submitting
+      options:
+        - label: I have searched existing issues and feature requests
+          required: true
+        - label: This feature request is not already in the roadmap
+          required: true
+
+  - type: textarea
+    id: feature_description
+    attributes:
+      label: Feature Description
+      description: A clear and concise description of the feature you'd like to see
+      placeholder: e.g., Add declarative collection management via a QdrantCollection resource
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use Case / Motivation
+      description: Explain why this feature would be useful. What problem does it solve?
+      placeholder: |
+        As a Qdrant operator user, I need declarative collection management so that I can:
+        - Version-control collection schemas alongside the cluster
+        - Automate shard rebalancing on scale-out
+        - Avoid manual snapshot/replicate steps
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like in detail
+      placeholder: |
+        **Implementation approach:**
+        - Reconcile a QdrantCollection CRD against the Qdrant collections API
+        - Observe -> plan -> `move_shard` for rebalancing
+        - Use collection aliases for zero-downtime re-shard
+
+        **Configuration example:**
+        ```yaml
+        apiVersion: qdrant.keiailab.com/v1alpha1
+        kind: QdrantCollection
+        metadata:
+          name: my-collection
+        spec:
+          clusterRef:
+            name: my-qdrant
+          vectors:
+            size: 768
+            distance: Cosine
+          shardNumber: 6
+        ```
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: Describe any alternative solutions or features you've considered
+      placeholder: |
+        1. Manage collections out-of-band with a client SDK
+        2. Use a Job that calls the Qdrant REST API on apply
+        3. A separate CRD for one-off rebalance operations
+
+        **Why these alternatives don't work:**
+        - Out-of-band tools drift from the desired state in Git
+        - Jobs don't reconcile continuously
+        - Separate CRDs add operational complexity
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or examples about the feature request
+      placeholder: |
+        - Qdrant documentation on distributed deployment: https://qdrant.tech/documentation/guides/distributed_deployment/
+        - Related issue: #123
+
+  - type: dropdown
+    id: willing_to_contribute
+    attributes:
+      label: Would you be willing to contribute this feature?
+      description: We welcome community contributions!
+      options:
+        - 'Yes, I can implement this feature'
+        - 'Yes, I can help test this feature'
+        - 'No, but I can provide feedback and testing'
+        - 'No, I just want to use the feature'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Critical (blocks adoption)
+        - High (important for production use)
+        - Medium (nice to have)
+        - Low (minor improvement)
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **Note:** Feature requests are evaluated based on alignment with project goals, technical feasibility, and community interest.

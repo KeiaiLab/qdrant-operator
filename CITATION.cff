@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: qdrant-operator
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - name: "Keiailab"
+    website: "https://github.com/keiailab"
+repository-code: "https://github.com/keiailab/qdrant-operator"
+url: "https://github.com/keiailab/qdrant-operator"
+abstract: >-
+  Kubernetes operator for Qdrant — provisions and operates distributed
+  (Raft) Qdrant vector-database clusters via the QdrantCluster CRD.
+  Phase A delivers declarative provisioning with safe-by-default guards
+  against destructive scale-down and immutable-field mutation.
+  MIT licensed.
+keywords:
+  - kubernetes
+  - operator
+  - qdrant
+  - vector-database
+  - raft
+license: MIT
+version: 0.6.0
+date-released: "2026-07-22"
