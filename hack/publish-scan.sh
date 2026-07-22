@@ -24,6 +24,7 @@ ALLOW=(
   'publish-scan'    # 본 스크립트/Makefile 의 자기 언급
   '^LICENSE:'       # MIT 표준 문구 (incidental damages 등)
   '^\.github/GOVERNANCE\.md:[0-9]*:.*[Gg]overnance'  # 공개 표준 거버넌스 문서의 자기 언급(형제 패밀리 동일 보유)
+  '^\.github/GOVERNANCE\.md:[0-9]*:.*GOVERNANCE'     # 동일 문서의 전대문자 자기 참조(GOVERNANCE.md 링크 등)
   '^\.github/SUPPORT\.md:[0-9]*:.*GOVERNANCE\.md'    # 표준 문서로의 상호 링크
   '^\.github/CODEOWNERS:[0-9]*:.*[Gg]overnance'      # 소유 구획 주석
   '^\.github/CODE_OF_CONDUCT\.md:[0-9]*:.*incident'  # Contributor Covenant v2.1 표준 문구
