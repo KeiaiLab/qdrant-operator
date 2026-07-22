@@ -429,6 +429,14 @@ var _ = Describe("QdrantCluster RF 재복제 (v0.4.0)", func() {
 var _ = Describe("QdrantCluster HA 자산 (v0.5.0)", func() {
 	It("replicas>=2 면 PDB 를 만들고, 1 로 줄이면 제거한다", func() {
 		key := types.NamespacedName{Name: "ha5", Namespace: "default"}
+		// peer ID 스펙별 고유 대역 의무(rf1 주석 참조): 이 세팅이 없으면 2→1 축소의
+		// 드레인이 전역 Fake 에 잔존한 타 스펙 컬렉션 샤드를 실제로 이동/RemovePeer 해
+		// (reb3 실측: rebvec 0:31->32 되돌림 + peer 32 소실) 해당 스펙을 영구 동결시킨다.
+		// ha5 대역 peer 는 잔존 컬렉션 샤드를 소유하지 않으므로 드레인은 이동 0 으로 완료된다.
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 951, URI: "http://ha5-0.ha5-headless:6335/"},
+			qdrant.Peer{ID: 952, URI: "http://ha5-1.ha5-headless:6335/"},
+		)
 		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
 		qc.Spec.Replicas = 2
 		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
