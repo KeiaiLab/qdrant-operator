@@ -207,7 +207,7 @@ func (r *QdrantCollectionReconciler) setDegraded(ctx context.Context, col *qdran
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantCollectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("qdrantcollection")
+	r.Recorder = mgr.GetEventRecorderFor("qdrantcollection") //nolint:staticcheck // SA1019: migrate to GetEventRecorder in the next code wave — docs-only waves must not change runtime behavior
 	if r.QdrantClientFor == nil {
 		// 프로덕션 기본: 클러스터 client Service DNS (오퍼레이터가 클러스터 안에서 동작 전제).
 		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
