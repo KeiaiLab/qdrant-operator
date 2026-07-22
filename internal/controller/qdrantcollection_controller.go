@@ -1,17 +1,7 @@
 /*
-Copyright 2026.
+Copyright 2026 Keiailab.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Licensed under the MIT License. See the LICENSE file for details.
 */
 
 package controller
@@ -217,7 +207,7 @@ func (r *QdrantCollectionReconciler) setDegraded(ctx context.Context, col *qdran
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantCollectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("qdrantcollection")
+	r.Recorder = mgr.GetEventRecorderFor("qdrantcollection") //nolint:staticcheck // SA1019: migrate to GetEventRecorder in the next code wave — docs-only waves must not change runtime behavior
 	if r.QdrantClientFor == nil {
 		// 프로덕션 기본: 클러스터 client Service DNS (오퍼레이터가 클러스터 안에서 동작 전제).
 		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {

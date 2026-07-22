@@ -1,0 +1,169 @@
+name: Question
+description: Ask a question about the Qdrant Operator
+title: '[QUESTION] '
+labels: ['question']
+assignees: ''
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reaching out!
+        Please ensure you've checked the documentation and existing issues before asking.
+        For open-ended usage questions, [GitHub Discussions](https://github.com/keiailab/qdrant-operator/discussions) is often a better fit than an issue.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      description: Please confirm the following before submitting
+      options:
+        - label: I have searched existing issues and discussions
+          required: true
+        - label: I have read the [README](https://github.com/keiailab/qdrant-operator#readme) documentation
+          required: true
+        - label: I have read the [Contributing Guide](https://github.com/keiailab/qdrant-operator/blob/main/.github/CONTRIBUTING.md)
+          required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Question Context
+      description: Provide context about what you're trying to achieve
+      placeholder: |
+        I'm trying to deploy a distributed QdrantCluster with TLS enabled.
+        I'm running Kubernetes 1.31 and using the operator v0.6.0.
+      render: markdown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kubernetes_version
+    attributes:
+      label: Kubernetes Version
+      description: Which Kubernetes version are you using? (the chart requires 1.29+)
+      options:
+        - '1.29'
+        - '1.30'
+        - '1.31'
+        - '1.32'
+        - 'Other'
+
+  - type: dropdown
+    id: qdrant_version
+    attributes:
+      label: Qdrant Version
+      description: Which Qdrant image version are you deploying?
+      options:
+        - '1.18'
+        - '1.17'
+        - '1.16'
+        - 'Other'
+
+  - type: dropdown
+    id: operator_version
+    attributes:
+      label: Qdrant Operator Version
+      description: Which version of the Qdrant Operator are you using?
+      options:
+        - 'v0.6.0'
+        - 'Other'
+
+  - type: textarea
+    id: what_tried
+    attributes:
+      label: What Have You Tried?
+      description: Describe what you've already tried to solve your problem
+      placeholder: |
+        1. I enabled TLS with `spec.config.tlsEnabled: true`
+        2. I referenced a certificate Secret
+        3. The pods fail to start
+        4. I checked the logs and see: "TLS certificate not found"
+
+        **Commands I've run:**
+        ```bash
+        kubectl get qdrantcluster my-qdrant -o yaml
+        kubectl logs -n data my-qdrant-0
+        ```
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Configuration Details
+      description: Provide relevant configuration details (YAML, settings, environment variables)
+      placeholder: |
+        **QdrantCluster CRD:**
+        ```yaml
+        apiVersion: qdrant.keiailab.com/v1alpha1
+        kind: QdrantCluster
+        metadata:
+          name: my-qdrant
+        spec:
+          replicas: 3
+          config:
+            clusterEnabled: true
+            tlsEnabled: true
+        ```
+      render: yaml
+
+  - type: textarea
+    id: specific_question
+    attributes:
+      label: Your Question
+      description: Ask your specific question clearly and concisely
+      placeholder: |
+        How do I supply the TLS certificate Secret so the operator mounts it into the Qdrant pods?
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: error_or_behavior
+    attributes:
+      label: Error Messages or Unexpected Behavior (if applicable)
+      description: If you're encountering an error or unexpected behavior, describe it here
+      placeholder: |
+        **Error message:**
+        ```
+        failed to load TLS certificate: open /qdrant/tls/tls.crt: no such file or directory
+        ```
+
+        **Pod status:**
+        ```
+        NAME          READY   STATUS             RESTARTS   AGE
+        my-qdrant-0   0/1     CrashLoopBackOff   3          5m
+        ```
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs (if applicable)
+      description: Provide relevant logs from the operator or Qdrant pods
+      placeholder: |
+        **Operator logs:**
+        ```bash
+        kubectl logs -n qdrant-operator-system deployment/qdrant-operator-controller-manager
+        ```
+
+        **Qdrant pod logs:**
+        ```bash
+        kubectl logs -n data my-qdrant-0
+        ```
+      render: shell
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Add any other information that might help answer your question
+      placeholder: |
+        - I'm following the TLS configuration from the README
+        - Using self-signed certificates for testing
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **Note:** Questions are community-supported and response times may vary.

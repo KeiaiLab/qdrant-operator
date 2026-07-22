@@ -1,0 +1,53 @@
+name: Dependency review
+
+# Block PRs that introduce dependencies with known CVEs, unacceptable
+# licenses, or unverified provenance. Pairs with govulncheck (which
+# scans only what the binary calls) — dependency-review covers the
+# graph of every PR addition, not just reachable code.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: Review dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # comment the diff summary inline
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      # 보안 tradeoff (의도적): dependency-review-action 은 GitHub Dependency graph
+      # 가 *반드시* 있어야 동작한다. 본 org/repo 는 graph 가 미가용이라 action 이
+      # review 전에 hard-error 한다(게이트가 동작하지 못하고 실패 알림 메일만 양산).
+      # 따라서 graph 가용 시에만 review 를 실행(fail-closed, 아래 if), 미가용 시엔 skip.
+      # 이는 fail-open 이 아니다: (1) graph 가용 시 review 는 그대로 차단 게이트로 동작,
+      # (2) CVE 차단은 graph 불요인 govulncheck(security-scan.yml)가 fail-closed backstop
+      # 으로 상시 enforce. dependency-review 는 graph 기반 *보충* 커버리지(전 의존 + 라이선스)다.
+      - name: Check dependency graph availability
+        id: dependency_graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/dependency-graph/sbom" >/dev/null 2>"${RUNNER_TEMP}/dependency-graph.err"; then
+            echo "supported=true" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "supported=false" >>"${GITHUB_OUTPUT}"
+          echo "::notice::Dependency graph is unavailable for this repository; skipping dependency review until GitHub enables it."
+          cat "${RUNNER_TEMP}/dependency-graph.err" || true
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
+        if: steps.dependency_graph.outputs.supported == 'true'
+        with:
+          fail-on-severity: high
+          # See https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/using-the-dependency-review-action
+          # The repo is MIT; accept compatible permissive licenses
+          # explicitly. Reject GPL-family (copyleft) to keep the binary
+          # safe to redistribute as a closed-source operator image.
+          allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, Zlib, Unlicense, 0BSD, CC0-1.0
+          comment-summary-in-pr: on-failure

@@ -20,7 +20,7 @@ PATTERNS=(
 # 예외 라인 allowlist. LICENSE 는 표준 법률 텍스트(incidental 등)라 파일 단위 제외.
 ALLOW=(
   'publish-scan'    # 본 스크립트/Makefile 의 자기 언급
-  '^LICENSE:'       # Apache-2.0 표준 문구 (incidental damages 등)
+  '^LICENSE:'       # MIT 표준 문구 (incidental damages 등)
 )
 
 fail=0
