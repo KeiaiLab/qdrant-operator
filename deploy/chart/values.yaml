@@ -84,6 +84,16 @@ podAnnotations: {}
 # -- Pod 추가 라벨
 podLabels: {}
 
+# -- 오퍼레이터 Deployment(리소스 자체 metadata)에 적용되는 소유권 정보.
+#    `email` → Deployment `metadata.annotations.email` (kube-linter
+#    `required-annotation-email` 검사 대상), `owner` → Deployment
+#    `metadata.labels.owner` (`required-label-owner` 검사 대상). 두 검사 모두
+#    Deployment 자체의 metadata 만 보고 spec.template.metadata(Pod 템플릿)는
+#    보지 않는다 — 멀티테넌트 클러스터에서는 테넌트별로 override.
+ownership:
+  email: security@keiailab.com
+  owner: keiailab
+
 # -- 스케줄링 제약
 nodeSelector: {}
 tolerations: []

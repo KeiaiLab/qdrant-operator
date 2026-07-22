@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
 )
@@ -205,7 +205,7 @@ func (r *QdrantClusterReconciler) settleActiveMove(qc *qdrantv1alpha1.QdrantClus
 		qc.Status.MoveBackoff++
 		d := backoff(qc.Status.MoveBackoff)
 		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: fmt.Sprintf("%s/%d 가 %s 내 관측되지 않음(lost-command) — %v 후 재계획", am.Collection, am.ShardID, moveAppearDeadline, d), ObservedGeneration: qc.Generation})
-		r.Recorder.Event(qc, corev1.EventTypeWarning, "MoveFailed", "이동/드롭 명령 유실 — 재계획 예정")
+		commonsevents.EmitWarningf(r.Recorder, qc, "MoveFailed", "%s", "이동/드롭 명령 유실 — 재계획 예정")
 		return settleLost, d
 	}
 }
@@ -237,7 +237,7 @@ func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdran
 		qc.Status.ActiveMove = nil
 		qc.Status.MoveBackoff++
 		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: err.Error(), ObservedGeneration: qc.Generation})
-		r.Recorder.Event(qc, corev1.EventTypeWarning, "MoveFailed", err.Error())
+		commonsevents.EmitWarning(r.Recorder, qc, "MoveFailed", err)
 		return backoff(qc.Status.MoveBackoff)
 	}
 	reason := "ShardMoveIssued"
@@ -247,7 +247,7 @@ func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdran
 	case mv.Replicate:
 		reason = "ShardReplicateIssued"
 	}
-	r.Recorder.Event(qc, corev1.EventTypeNormal, reason, mv.String())
+	commonsevents.Emit(r.Recorder, qc, reason, mv.String())
 	return 10 * time.Second
 }
 

@@ -9,6 +9,27 @@ at release-tag time (`git cliff --tag vX.Y.Z`).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-22
+
+### Added
+
+- `ownership.*` chart values (`ownership.email`, `ownership.owner`) rendering an
+  `email` annotation and `owner` label on the controller-manager Deployment
+  (following the valkey-operator pattern). Re-enables the kube-linter
+  `required-annotation-email` / `required-label-owner` checks.
+- Release pipeline gained a fifth channel: the operator image is now also pushed
+  to `ghcr.io/keiailab/qdrant-operator` (the chart's default `image.repository`),
+  so `image.tag`-unset consumers can pull the published image. `hack/release.sh`
+  and `hack/verify-publish.sh` tag/push/verify this channel.
+
+### Changed
+
+- Kubernetes event recording migrated from the deprecated
+  `EventRecorder`/`GetEventRecorderFor` (`k8s.io/client-go/tools/record`) to the
+  `events.k8s.io/v1` API (`k8s.io/client-go/tools/events`) via the shared
+  `keiailab-commons/pkg/events` adapter, matching the valkey/mongodb/postgres
+  operators. Removes the `//nolint:staticcheck` (SA1019) suppressions.
+
 ## [0.6.0] - 2026-07-21
 
 ### Added

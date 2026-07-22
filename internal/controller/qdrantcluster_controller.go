@@ -21,13 +21,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
 	resources "github.com/keiailab/qdrant-operator/internal/resources"
@@ -44,7 +45,7 @@ const (
 type QdrantClusterReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 	// QdrantClientFor 는 대상 클러스터의 REST 클라이언트를 만든다(B-2 분포 관측·B-3/B-4 실행).
 	// 프로덕션은 client Service DNS 기반 HTTP, envtest 는 Fake 를 주입한다.
 	QdrantClientFor func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client
@@ -117,7 +118,7 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// 관측-우선(R1-5): status 정지 방지 — immutable 대기 중에도 B-2 관측은 갱신한다.
 			_ = r.observe(ctx, qc)
 			meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "ImmutableFieldChanged", Message: "STS immutable 필드 변경 감지 — 수동 재조정 필요", ObservedGeneration: qc.Generation})
-			r.Recorder.Event(qc, corev1.EventTypeWarning, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 미지원")
+			commonsevents.EmitWarningf(r.Recorder, qc, "ImmutableFieldChanged", "persistence/serviceName/selector 변경은 미지원")
 			if qc.Status.DrainStatus != nil { // 진행 중 드레인은 '일시중단' 을 명시(무경고 정지 금지)
 				qc.Status.DrainStatus.Message = "immutable-drift — STS 수동 재조정 대기, 드레인 일시중단"
 				qc.Status.Phase = phaseDraining
@@ -377,14 +378,10 @@ func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				cluster.Name, ordinal, resources.HeadlessName(cluster), cluster.Namespace, resources.RESTPort))
 		}
 	}
-	// SA1019 억제 사유: 신규 GetEventRecorder 는 events.EventRecorder(k8s.io/client-go/tools/events)
-	// 를 반환하는데, 이는 구 record.EventRecorder 와 비등가다 — 평문 Event(obj,type,reason,msg) 가
-	// 없고 Eventf(regarding,related,type,reason,action,note,…) 만 있어 related 객체·action 인자가 새로
-	// 강제된다. Recorder.Event 로 경고를 내는 두 가드(Task 9 ImmutableFieldChanged / Task 10
-	// ScaleDownRefused)의 의미를 바꾸지 않으려면 구 API 가 맞다(구 events API 는 아직 지원 — "미래
-	// 릴리스 제거" 예고일 뿐). controller-runtime 자체도 동일 지점을 //nolint:staticcheck 로 억제하므로
-	// (manager/internal.go·leaderelection) 마이그레이션 대신 표적 억제한다.
-	r.Recorder = mgr.GetEventRecorderFor("qdrantcluster") //nolint:staticcheck // SA1019: 구 events API 유지 — 신규 GetEventRecorder 비등가(Event 미제공, action 필수)
+	// 이벤트 API 마이그레이션 완료 — 신규 events API(k8s.io/client-go/tools/events)를 사용한다.
+	// 형제 오퍼레이터(valkey/mongodb/postgres)와 동일하게 keiailab-commons/pkg/events 어댑터를
+	// 경유해 Emit/EmitWarning 으로 기록한다(related=nil, action=reason 고정).
+	r.Recorder = mgr.GetEventRecorder("qdrantcluster")
 	return ctrl.NewControllerManagedBy(mgr).
 		// generation 변경(spec)만 트리거 — 자기 status 커밋으로 인한 재기록 루프 차단(§5.3).
 		// Owns(STS 등) 이벤트와 RequeueAfter 는 영향받지 않는다.

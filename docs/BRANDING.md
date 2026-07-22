@@ -1,10 +1,15 @@
+<p align="center">
+  <b>English</b> |
+  <a href="BRANDING.ko.md">한국어</a> |
+  <a href="BRANDING.ja.md">日本語</a> |
+  <a href="BRANDING.zh.md">中文</a>
+</p>
+
 # Branding Guide — `qdrant-operator`
 
 > Visual identity, voice, and tone for `qdrant-operator`.
 
 This document is the canonical reference for `qdrant-operator` branding decisions. It applies to the README, release notes, marketing material, and any third-party communication that represents the project.
-
-> **i18n**: translations (`BRANDING.ko.md` / `BRANDING.ja.md` / `BRANDING.zh.md`) follow the family language-switcher pattern once this repository adopts localized docs. Not yet present — English is the current source of truth.
 
 ## 1. Identity
 

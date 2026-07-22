@@ -109,11 +109,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 ##@ Build
 
 .PHONY: verify-publish
-verify-publish: ## OSS 발행 4채널(GitHub 태그/이미지/ghcr chart/카탈로그) 일치 검증
+verify-publish: ## OSS 발행 5채널(GitHub 태그/이미지/ghcr 이미지/ghcr chart/카탈로그) 일치 검증
 	bash hack/verify-publish.sh
 
 .PHONY: release
-release: ## OSS 릴리스 단일 진입점 — 게이트부터 4채널 발행까지 (사용: make release VERSION=0.7.0)
+release: ## OSS 릴리스 단일 진입점 — 게이트부터 5채널 발행까지 (사용: make release VERSION=0.7.0)
 	@test -n "$(VERSION)" || (echo "사용: make release VERSION=0.7.0" >&2; exit 1)
 	bash hack/release.sh $(VERSION)
 

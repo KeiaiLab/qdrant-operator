@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OSS 발행 4채널 일치 검증 — GitHub 태그 / 컨테이너 이미지 / ghcr chart / 중앙 카탈로그.
+# OSS 발행 5채널 일치 검증 — GitHub 태그 / 컨테이너 이미지 / ghcr 이미지 / ghcr chart / 중앙 카탈로그.
 #
 # 배경: 라이브(Flux)는 GitHub main 을 직접 추적해 자동으로 최신이 되지만, 공개 배포
 # 채널(chart)은 릴리스마다 사람이 발행해야 해서 조용히 뒤처진다(2026-07-21 실측:
@@ -18,6 +18,8 @@ github_repo="${GITHUB_REPO:-KeiaiLab/${chart_name}}"
 image_repo="${IMAGE_REPO:-registry.keiailab.com/keiailab/oss/${chart_name}}"
 image_registry_host="${image_repo%%/*}"
 ghcr_chart="${GHCR_CHART:-keiailab/charts/${chart_name}}"
+# ghcr 이미지 채널 — deploy/chart/values.yaml image.repository 기본값(ghcr.io/…)과 정합.
+ghcr_image="${GHCR_IMAGE:-keiailab/${chart_name}}"
 catalog_index="${CATALOG_INDEX:-https://keiailab.github.io/charts/index.yaml}"
 
 fail=0
@@ -81,6 +83,16 @@ ghcr_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 [[ "$ghcr_code" == "200" ]] && ok "chart oci://ghcr.io/${ghcr_chart}:${version} 익명 pull 가능" \
 	|| bad "chart ghcr ${version} 익명 조회 실패(HTTP ${ghcr_code}) — helm push 누락 또는 패키지 비공개"
 
+# 3b) ghcr 오퍼레이터 이미지 (values.yaml image.repository 기본값, 익명 pull) — 태그는 v 접두 app_version
+ghcr_img_token="$(curl -fsSL "https://ghcr.io/token?scope=repository:${ghcr_image}:pull" 2>/dev/null |
+	python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || echo '')"
+ghcr_img_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+	-H "Authorization: Bearer ${ghcr_img_token}" \
+	-H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
+	"https://ghcr.io/v2/${ghcr_image}/manifests/${app_version}" 2>/dev/null || echo 000)"
+[[ "$ghcr_img_code" == "200" ]] && ok "이미지 ghcr.io/${ghcr_image}:${app_version} 익명 pull 가능" \
+	|| bad "이미지 ghcr.io/${ghcr_image}:${app_version} 익명 조회 실패(HTTP ${ghcr_img_code}) — docker push 누락 또는 패키지 비공개"
+
 # 4) 중앙 카탈로그(ArtifactHub 가 크롤하는 index)
 idx_version="$(curl -fsSL "$catalog_index" 2>/dev/null | python3 -c "
 import sys,re
@@ -105,4 +117,4 @@ if ((fail)); then
 	printf '\n✗ 발행 일관성 위반 — 위 항목을 해소해야 릴리스가 완결된다(hack/release.sh 는 전 단계를 자동 수행).\n'
 	exit 1
 fi
-printf '\n✓ 발행 4채널 일치 (GitHub / 이미지 / ghcr chart / 카탈로그)\n'
+printf '\n✓ 발행 5채널 일치 (GitHub / 이미지 / ghcr 이미지 / ghcr chart / 카탈로그)\n'

@@ -8,7 +8,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
@@ -16,12 +15,12 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
 )
@@ -227,7 +226,7 @@ func (r *QdrantClusterReconciler) reconcileDrainCycle(ctx context.Context, qc *q
 		if err := r.shrinkOne(ctx, live, cur-1); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.Recorder.Event(qc, corev1.EventTypeNormal, "DrainShrunk", fmt.Sprintf("replicas %d→%d", cur, cur-1))
+		commonsevents.Emitf(r.Recorder, qc, "DrainShrunk", "replicas %d→%d", cur, cur-1)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
@@ -273,11 +272,11 @@ func (r *QdrantClusterReconciler) reconcileDrainCycle(ctx context.Context, qc *q
 			_ = r.Status().Update(ctx, qc)
 			return ctrl.Result{RequeueAfter: backoff(qc.Status.MoveBackoff)}, nil
 		}
-		r.Recorder.Event(qc, corev1.EventTypeNormal, "DrainPeerRemoved", strconv.FormatUint(targetPeer.ID, 10))
+		commonsevents.Emit(r.Recorder, qc, "DrainPeerRemoved", strconv.FormatUint(targetPeer.ID, 10))
 		if err := r.shrinkOne(ctx, live, cur-1); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.Recorder.Event(qc, corev1.EventTypeNormal, "DrainShrunk", fmt.Sprintf("replicas %d→%d", cur, cur-1))
+		commonsevents.Emitf(r.Recorder, qc, "DrainShrunk", "replicas %d→%d", cur, cur-1)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 }

@@ -250,12 +250,14 @@ var _ = Describe("QdrantCluster rebalance (B-3)", func() {
 		Expect(rebMoves[0]).To(Equal("rebvec/0:31->32"), "결정론 첫 이동")
 
 		fetched := &qdrantv1alpha1.QdrantCluster{}
-		Eventually(func() string {
-			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "reb3", Namespace: "default"}, fetched)
-			return fetched.Status.Phase
-		}, "15s", "250ms").Should(Equal("Running"))
-		Expect(fetched.Status.PlannedMoves).To(BeEmpty(), "균형 후 계획은 비어야 함")
-		Expect(fetched.Status.ActiveMove).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
+		// phase 전환과 계획 정리는 서로 다른 reconcile 에서 수렴하므로
+		// 세 필드를 하나의 Eventually 로 묶어야 레이스가 없다.
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "reb3", Namespace: "default"}, fetched)).To(Succeed())
+			g.Expect(fetched.Status.Phase).To(Equal("Running"))
+			g.Expect(fetched.Status.PlannedMoves).To(BeEmpty(), "균형 후 계획은 비어야 함")
+			g.Expect(fetched.Status.ActiveMove).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
+		}, "45s", "250ms").Should(Succeed())
 	})
 
 	It("dry-run(enabled=false)은 계획만 노출하고 이동을 발행하지 않는다", func() {
@@ -427,6 +429,14 @@ var _ = Describe("QdrantCluster RF 재복제 (v0.4.0)", func() {
 var _ = Describe("QdrantCluster HA 자산 (v0.5.0)", func() {
 	It("replicas>=2 면 PDB 를 만들고, 1 로 줄이면 제거한다", func() {
 		key := types.NamespacedName{Name: "ha5", Namespace: "default"}
+		// peer ID 스펙별 고유 대역 의무(rf1 주석 참조): 이 세팅이 없으면 2→1 축소의
+		// 드레인이 전역 Fake 에 잔존한 타 스펙 컬렉션 샤드를 실제로 이동/RemovePeer 해
+		// (reb3 실측: rebvec 0:31->32 되돌림 + peer 32 소실) 해당 스펙을 영구 동결시킨다.
+		// ha5 대역 peer 는 잔존 컬렉션 샤드를 소유하지 않으므로 드레인은 이동 0 으로 완료된다.
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 951, URI: "http://ha5-0.ha5-headless:6335/"},
+			qdrant.Peer{ID: 952, URI: "http://ha5-1.ha5-headless:6335/"},
+		)
 		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
 		qc.Spec.Replicas = 2
 		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
