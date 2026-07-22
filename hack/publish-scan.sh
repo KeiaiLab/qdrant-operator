@@ -18,9 +18,15 @@ PATTERNS=(
   'incident'
 )
 # 예외 라인 allowlist. LICENSE 는 표준 법률 텍스트(incidental 등)라 파일 단위 제외.
+# 커뮤니티 헬스 문서(.github/)는 공개 OSS 표준 문서라 해당 단어의 정당 사용 라인만
+# 정밀 제외한다 — 파일 단위 제외는 내부 참조 유출 검출력을 깎으므로 금지.
 ALLOW=(
   'publish-scan'    # 본 스크립트/Makefile 의 자기 언급
   '^LICENSE:'       # MIT 표준 문구 (incidental damages 등)
+  '^\.github/GOVERNANCE\.md:[0-9]*:.*[Gg]overnance'  # 공개 표준 거버넌스 문서의 자기 언급(형제 패밀리 동일 보유)
+  '^\.github/SUPPORT\.md:[0-9]*:.*GOVERNANCE\.md'    # 표준 문서로의 상호 링크
+  '^\.github/CODEOWNERS:[0-9]*:.*[Gg]overnance'      # 소유 구획 주석
+  '^\.github/CODE_OF_CONDUCT\.md:[0-9]*:.*incident'  # Contributor Covenant v2.1 표준 문구
 )
 
 fail=0
