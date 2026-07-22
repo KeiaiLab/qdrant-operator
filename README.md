@@ -158,12 +158,12 @@ The API is `v1alpha1`; expect changes before a stable release.
 
 ## Releasing
 
-Maintainers publish to four channels at once — GitHub tag, container image, ghcr OCI chart, and the central catalog — from a single command so no channel is missed:
+Maintainers publish to five channels at once — GitHub tag, internal container image, ghcr container image, ghcr OCI chart, and the central catalog — from a single command so no channel is missed:
 
 ```bash
 make release VERSION=0.7.0     # gate → tag → image → chart → catalog → verify
 DRY_RUN=1 hack/release.sh 0.7.0  # print every step without publishing
-make verify-publish            # check the 4-channel consistency of the current state
+make verify-publish            # check the 5-channel consistency of the current state
 ```
 
 The release gate runs `test`, `lint`, and `publish-scan` first and re-checks the

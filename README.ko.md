@@ -158,12 +158,12 @@ API는 `v1alpha1`이며, stable 릴리스 이전까지 변경될 수 있다.
 
 ## 릴리스
 
-메인테이너는 GitHub 태그 · 컨테이너 이미지 · ghcr OCI chart · 중앙 카탈로그 네 채널에 단일 명령으로 동시 발행한다 — 수동 절차는 하나를 빠뜨리기 쉽기 때문이다.
+메인테이너는 GitHub 태그 · 내부 컨테이너 이미지 · ghcr 컨테이너 이미지 · ghcr OCI chart · 중앙 카탈로그 다섯 채널에 단일 명령으로 동시 발행한다 — 수동 절차는 하나를 빠뜨리기 쉽기 때문이다.
 
 ```bash
 make release VERSION=0.7.0     # 게이트 → 태그 → 이미지 → chart → 카탈로그 → 검증
 DRY_RUN=1 hack/release.sh 0.7.0  # 발행 없이 전체 단계만 출력
-make verify-publish            # 현재 상태의 4채널 일치 여부 검사
+make verify-publish            # 현재 상태의 5채널 일치 여부 검사
 ```
 
 릴리스 게이트는 `test` · `lint` · `publish-scan`을 먼저 통과시키고 `verify-publish`로
