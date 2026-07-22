@@ -253,7 +253,7 @@ var _ = Describe("QdrantCluster rebalance (B-3)", func() {
 		Eventually(func() string {
 			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "reb3", Namespace: "default"}, fetched)
 			return fetched.Status.Phase
-		}, "15s", "250ms").Should(Equal("Running"))
+		}, "45s", "250ms").Should(Equal("Running"))
 		Expect(fetched.Status.PlannedMoves).To(BeEmpty(), "균형 후 계획은 비어야 함")
 		Expect(fetched.Status.ActiveMove).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
 	})

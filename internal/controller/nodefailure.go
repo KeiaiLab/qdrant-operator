@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	resources "github.com/keiailab/qdrant-operator/internal/resources"
 )
@@ -49,8 +50,8 @@ func (r *QdrantClusterReconciler) reconcileStuckPods(ctx context.Context, qc *qd
 		if err := r.Delete(ctx, pod, &client.DeleteOptions{GracePeriodSeconds: &grace}); err != nil && !apierrors.IsNotFound(err) {
 			return 0
 		}
-		r.Recorder.Event(qc, corev1.EventTypeWarning, "StuckPodDeleted",
-			pod.Name+" 가 죽은 노드 "+pod.Spec.NodeName+" 에 갇혀 강제 삭제 — StatefulSet 이 대체 파드를 생성한다")
+		commonsevents.EmitWarningf(r.Recorder, qc, "StuckPodDeleted",
+			"%s", pod.Name+" 가 죽은 노드 "+pod.Spec.NodeName+" 에 갇혀 강제 삭제 — StatefulSet 이 대체 파드를 생성한다")
 		return 1
 	}
 	return 0

@@ -8,7 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
@@ -47,7 +47,7 @@ func newFixture(t *testing.T, replicas int32, objs ...runtime.Object) (*QdrantCl
 	qc.Spec.Replicas = replicas
 	all := append([]runtime.Object{qc}, objs...)
 	c := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(all...).Build()
-	return &QdrantClusterReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}, qc
+	return &QdrantClusterReconciler{Client: c, Scheme: s, Recorder: events.NewFakeRecorder(10)}, qc
 }
 
 func TestReconcileStuckPods(t *testing.T) {

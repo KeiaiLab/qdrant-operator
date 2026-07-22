@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
 )
@@ -94,8 +95,8 @@ func (r *QdrantCollectionReconciler) beginReshard(ctx context.Context, col *qdra
 		StartedAt:         &now,
 	}
 	col.Status.Phase = phaseResharding
-	r.Recorder.Event(col, "Normal", "ReshardStarted",
-		fmt.Sprintf("%s: shard %d→%d (shadow %s)", physical, info.ShardNumber, *col.Spec.ShardNumber, col.Status.Reshard.ShadowCollection))
+	commonsevents.Emitf(r.Recorder, col, "ReshardStarted",
+		"%s: shard %d→%d (shadow %s)", physical, info.ShardNumber, *col.Spec.ShardNumber, col.Status.Reshard.ShadowCollection)
 	if err := r.Status().Update(ctx, col); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -111,7 +112,7 @@ func (r *QdrantCollectionReconciler) failReshard(ctx context.Context, col *qdran
 	rs.Attempts++
 	col.Status.Phase = condDegraded
 	meta.SetStatusCondition(&col.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: reason, Message: msg, ObservedGeneration: col.Generation})
-	r.Recorder.Event(col, "Warning", reason, msg)
+	commonsevents.EmitWarningf(r.Recorder, col, reason, "%s", msg)
 	if err := r.Status().Update(ctx, col); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -126,7 +127,7 @@ func (r *QdrantCollectionReconciler) reconcileReshard(ctx context.Context, col *
 	if col.Spec.ShardNumber == nil || *col.Spec.ShardNumber != rs.TargetShardNumber {
 		_ = qcl.DeleteCollection(ctx, rs.ShadowCollection)
 		col.Status.Reshard = nil
-		r.Recorder.Event(col, "Normal", "ReshardAborted", "목표 shardNumber 재변경 — 재시작")
+		commonsevents.Emit(r.Recorder, col, "ReshardAborted", "목표 shardNumber 재변경 — 재시작")
 		if err := r.Status().Update(ctx, col); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -194,16 +195,16 @@ func (r *QdrantCollectionReconciler) reconcileReshard(ctx context.Context, col *
 		if col.Spec.OnDelete == qdrantv1alpha1.CollectionDelete {
 			if err := qcl.DeleteCollection(ctx, source); err != nil {
 				// 원본 처분 재시도만(진본은 이미 shadow).
-				r.Recorder.Event(col, "Warning", "SourceDisposalRetry", err.Error())
+				commonsevents.EmitWarning(r.Recorder, col, "SourceDisposalRetry", err)
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
-			r.Recorder.Event(col, "Normal", "SourceDeleted", source)
+			commonsevents.Emit(r.Recorder, col, "SourceDeleted", source)
 		} else {
-			r.Recorder.Event(col, "Normal", "SourceRetained", source)
+			commonsevents.Emit(r.Recorder, col, "SourceRetained", source)
 		}
 		col.Status.Reshard = nil
-		r.Recorder.Event(col, "Normal", "ReshardCompleted",
-			fmt.Sprintf("%s → %s (shard %d)", source, col.Status.ActiveCollection, rs.TargetShardNumber))
+		commonsevents.Emitf(r.Recorder, col, "ReshardCompleted",
+			"%s → %s (shard %d)", source, col.Status.ActiveCollection, rs.TargetShardNumber)
 		return r.setReady(ctx, col, rs.TotalPoints)
 
 	case "Blocked":

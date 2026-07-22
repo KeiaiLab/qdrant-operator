@@ -16,11 +16,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
 	"github.com/keiailab/qdrant-operator/internal/resources"
@@ -34,7 +35,7 @@ const collectionFinalizer = "qdrant.keiailab.com/collection-cleanup"
 type QdrantCollectionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 	// QdrantClientFor 는 대상 QdrantCluster 의 REST 엔드포인트 클라이언트를 만든다.
 	// 프로덕션은 client Service DNS 기반 HTTP, envtest 는 Fake 를 주입한다.
 	QdrantClientFor func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client
@@ -68,10 +69,10 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if !col.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(col, collectionFinalizer) {
 			if err := qc.DeleteCollection(ctx, name); err != nil {
-				r.Recorder.Event(col, "Warning", "DeleteFailed", err.Error())
+				commonsevents.EmitWarning(r.Recorder, col, "DeleteFailed", err)
 				return ctrl.Result{}, err
 			}
-			r.Recorder.Event(col, "Normal", "CollectionDeleted", name)
+			commonsevents.Emit(r.Recorder, col, "CollectionDeleted", name)
 			controllerutil.RemoveFinalizer(col, collectionFinalizer)
 			if err := r.Update(ctx, col); err != nil {
 				return ctrl.Result{}, err
@@ -118,7 +119,7 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			r.setDegraded(ctx, col, "CreateFailed", err.Error())
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
-		r.Recorder.Event(col, "Normal", "CollectionCreated", name)
+		commonsevents.Emit(r.Recorder, col, "CollectionCreated", name)
 		col.Status.Adopted = false
 		col.Status.ActiveCollection = name
 		if err := r.ensureAlias(ctx, qc, col.Spec.Alias, name); err != nil {
@@ -131,7 +132,7 @@ func (r *QdrantCollectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		// 존재 + 파라미터 일치 → 채택. CR 생성으로 만들어진 경우가 아니면 adopted 로 표시.
 		if !meta.IsStatusConditionTrue(col.Status.Conditions, condReady) {
 			col.Status.Adopted = true
-			r.Recorder.Event(col, "Normal", "CollectionAdopted", name)
+			commonsevents.Emit(r.Recorder, col, "CollectionAdopted", name)
 		}
 		col.Status.ActiveCollection = name
 		if err := r.ensureAlias(ctx, qc, col.Spec.Alias, name); err != nil {
@@ -201,13 +202,13 @@ func (r *QdrantCollectionReconciler) setDegraded(ctx context.Context, col *qdran
 	meta.SetStatusCondition(&col.Status.Conditions, metav1.Condition{
 		Type: condDegraded, Status: metav1.ConditionTrue, Reason: reason,
 		Message: msg, ObservedGeneration: col.Generation})
-	r.Recorder.Event(col, "Warning", reason, msg)
+	commonsevents.EmitWarningf(r.Recorder, col, reason, "%s", msg)
 	_ = r.Status().Update(ctx, col)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantCollectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("qdrantcollection") //nolint:staticcheck // SA1019: migrate to GetEventRecorder in the next code wave — docs-only waves must not change runtime behavior
+	r.Recorder = mgr.GetEventRecorder("qdrantcollection")
 	if r.QdrantClientFor == nil {
 		// 프로덕션 기본: 클러스터 client Service DNS (오퍼레이터가 클러스터 안에서 동작 전제).
 		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
