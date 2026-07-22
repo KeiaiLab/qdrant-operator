@@ -250,12 +250,14 @@ var _ = Describe("QdrantCluster rebalance (B-3)", func() {
 		Expect(rebMoves[0]).To(Equal("rebvec/0:31->32"), "결정론 첫 이동")
 
 		fetched := &qdrantv1alpha1.QdrantCluster{}
-		Eventually(func() string {
-			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "reb3", Namespace: "default"}, fetched)
-			return fetched.Status.Phase
-		}, "45s", "250ms").Should(Equal("Running"))
-		Expect(fetched.Status.PlannedMoves).To(BeEmpty(), "균형 후 계획은 비어야 함")
-		Expect(fetched.Status.ActiveMove).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
+		// phase 전환과 계획 정리는 서로 다른 reconcile 에서 수렴하므로
+		// 세 필드를 하나의 Eventually 로 묶어야 레이스가 없다.
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "reb3", Namespace: "default"}, fetched)).To(Succeed())
+			g.Expect(fetched.Status.Phase).To(Equal("Running"))
+			g.Expect(fetched.Status.PlannedMoves).To(BeEmpty(), "균형 후 계획은 비어야 함")
+			g.Expect(fetched.Status.ActiveMove).To(BeNil(), "완료 후 발행 추적은 정산돼야 함")
+		}, "45s", "250ms").Should(Succeed())
 	})
 
 	It("dry-run(enabled=false)은 계획만 노출하고 이동을 발행하지 않는다", func() {
