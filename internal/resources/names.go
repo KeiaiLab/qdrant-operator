@@ -28,6 +28,11 @@ const (
 	InitVolumeName      = "qdrant-init"
 )
 
+// DefaultAPIKeySecretKey 는 SecretKeyRef.Key 미지정 시 fallback 하는 Secret 데이터 키다.
+// CRD default 마커(qdrantcluster_types.go)와 반드시 같은 값이어야 한다 — marker 는 리터럴만
+// 허용해 상수를 공유할 수 없으므로 값 일치를 주석으로 강제한다.
+const DefaultAPIKeySecretKey = "api-key"
+
 // 컨테이너 마운트 경로 — ConfigMountDir 와 동일 패턴. golden 컨테이너 volumeMounts SSOT.
 // InitMountDir 는 마운트와 QDRANT_INIT_FILE_PATH env 값이 함께 참조하므로 상수화가 필수다.
 const (

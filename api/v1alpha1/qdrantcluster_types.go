@@ -74,7 +74,12 @@ type QdrantClusterSpec struct {
 	// +kubebuilder:default="ClusterIP"
 	ServiceType        corev1.ServiceType `json:"serviceType,omitempty"`
 	ServiceAnnotations map[string]string  `json:"serviceAnnotations,omitempty"`
-	APIKey             *SecretKeyRef      `json:"apiKey,omitempty"`
+	// APIKey 는 쓰기 권한 인증 키 — QDRANT__SERVICE__API_KEY env(secretKeyRef)로 주입된다.
+	APIKey *SecretKeyRef `json:"apiKey,omitempty"`
+	// ReadOnlyAPIKey 는 읽기 전용 소비자용 최소권한 키 — QDRANT__SERVICE__READ_ONLY_API_KEY.
+	// 검색만 하는 소비자에게 쓰기 권한 없는 키를 발급하기 위한 별개 축이다.
+	// +optional
+	ReadOnlyAPIKey *SecretKeyRef `json:"readOnlyApiKey,omitempty"`
 	// +kubebuilder:default=1000
 	RunAsUser int64 `json:"runAsUser,omitempty"`
 	// +kubebuilder:default=3000

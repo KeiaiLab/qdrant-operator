@@ -85,9 +85,9 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 						// args 는 qdrant 이미지 WORKDIR(/qdrant) 기준 상대경로.
 						Command: []string{"/bin/bash", "-c"},
 						Args:    []string{"./config/initialize.sh"},
-						Env: []corev1.EnvVar{
+						Env: append([]corev1.EnvVar{
 							{Name: "QDRANT_INIT_FILE_PATH", Value: InitMountDir + "/.qdrant-initialized"},
-						},
+						}, apiKeyEnv(qc)...),
 						Resources: res,
 						Ports: []corev1.ContainerPort{
 							{Name: "http", ContainerPort: RESTPort, Protocol: corev1.ProtocolTCP},
@@ -143,6 +143,38 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 					Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: *qc.Spec.Persistence.Size}}, // Size 는 포인터(default 발동) — apiserver 라운드트립 후 non-nil 보장
 				},
 			}},
+		},
+	}
+}
+
+// apiKeyEnv 는 설정된 인증 키를 qdrant 이중언더스코어 env override 로 만든다. Secret 값은
+// valueFrom.secretKeyRef 로만 주입해 ConfigMap(평문) 경로를 피한다. 미설정 CR 이면 nil 반환 →
+// STS env 에 아무것도 추가되지 않아 golden(helm template) parity 를 유지한다.
+func apiKeyEnv(qc *qdrantv1alpha1.QdrantCluster) []corev1.EnvVar {
+	var env []corev1.EnvVar
+	if ref := qc.Spec.APIKey; ref != nil {
+		env = append(env, secretEnv("QDRANT__SERVICE__API_KEY", ref))
+	}
+	if ref := qc.Spec.ReadOnlyAPIKey; ref != nil {
+		env = append(env, secretEnv("QDRANT__SERVICE__READ_ONLY_API_KEY", ref))
+	}
+	return env
+}
+
+// secretEnv 는 SecretKeyRef 를 secretKeyRef env 로 변환한다. Key 가 비면 'api-key' 로 방어
+// (CRD default 와 동일값) — 빈 Secret 키 참조로 인한 런타임 실패를 막는다.
+func secretEnv(name string, ref *qdrantv1alpha1.SecretKeyRef) corev1.EnvVar {
+	key := ref.Key
+	if key == "" {
+		key = DefaultAPIKeySecretKey
+	}
+	return corev1.EnvVar{
+		Name: name,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Key:                  key,
+			},
 		},
 	}
 }

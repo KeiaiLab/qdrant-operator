@@ -134,6 +134,12 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
+	// 인증 키가 켜졌는데 TLS 가 꺼져 있으면 키가 평문으로 전송된다 — 게이팅하지 않고 경고만(설계 결정).
+	if authWithoutTLS(qc) {
+		commonsevents.EmitWarningf(r.Recorder, qc, "AuthWithoutTLS",
+			"apiKey 가 설정됐으나 TLS 비활성 — 키가 평문으로 전송됩니다")
+	}
+
 	if err := r.applyOwned(ctx, qc, sts); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -142,6 +148,14 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 // stsImmutableChanged는 라이브 STS(existing)와 렌더 결과(desired) 사이에 apiserver가 거부할
 // immutable 필드 변경이 있는지 검사한다.
+// authWithoutTLS 는 인증 키(쓰기/읽기)가 설정됐는데 TLS 가 꺼져 있어 경고 대상인지 판정한다.
+// 게이팅이 아니라 경고용 순수 함수 — 클러스터 내부 평문 트래픽에 api_key 단독은 통상 패턴이나,
+// 키가 평문 전송된다는 사실을 운영자에게 표면화한다.
+func authWithoutTLS(qc *qdrantv1alpha1.QdrantCluster) bool {
+	hasKey := qc.Spec.APIKey != nil || qc.Spec.ReadOnlyAPIKey != nil
+	return hasKey && !qc.Spec.Config.TLSEnabled
+}
+
 func stsImmutableChanged(existing, desired *appsv1.StatefulSet) bool {
 	if existing.Spec.ServiceName != desired.Spec.ServiceName {
 		return true

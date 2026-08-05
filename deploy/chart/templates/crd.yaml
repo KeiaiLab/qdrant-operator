@@ -952,7 +952,8 @@ spec:
                     type: object
                 type: object
               apiKey:
-                description: SecretKeyRef는 API 키를 담은 Secret 참조다
+                description: APIKey 는 쓰기 권한 인증 키 — QDRANT__SERVICE__API_KEY env(secretKeyRef)로
+                  주입된다.
                 properties:
                   key:
                     default: api-key
@@ -1021,6 +1022,19 @@ spec:
                   storageClassName:
                     default: ceph-rbd
                     type: string
+                type: object
+              readOnlyApiKey:
+                description: |-
+                  ReadOnlyAPIKey 는 읽기 전용 소비자용 최소권한 키 — QDRANT__SERVICE__READ_ONLY_API_KEY.
+                  검색만 하는 소비자에게 쓰기 권한 없는 키를 발급하기 위한 별개 축이다.
+                properties:
+                  key:
+                    default: api-key
+                    type: string
+                  name:
+                    type: string
+                required:
+                - name
                 type: object
               rebalance:
                 description: |-
@@ -1360,7 +1374,6 @@ spec:
         specReplicasPath: .spec.replicas
         statusReplicasPath: .status.readyReplicas
       status: {}
----
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

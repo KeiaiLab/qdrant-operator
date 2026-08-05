@@ -314,3 +314,95 @@ func TestBuildPodDisruptionBudget(t *testing.T) {
 		t.Fatalf("selector: %+v", p.Spec.Selector)
 	}
 }
+
+// apiKeyQC 는 apiKey 배선 검증용 최소 스펙 — golden fixture 와 분리해 env 추가가
+// parity 를 깨지 않는지(미설정 케이스)도 독립적으로 본다.
+func apiKeyQC() *qdrantv1alpha1.QdrantCluster {
+	qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: "data"}}
+	qc.Spec.Replicas = 1
+	qc.Spec.Image = qdrantv1alpha1.ImageSpec{Repository: "qdrant/qdrant", Tag: "v1.18.2"}
+	// Size 는 포인터 필드 — CRD default 는 apiserver 라운드트립에서만 발동하므로 빌더 단위
+	// 테스트에선 명시하지 않으면 nil deref panic. golden fixture 와 동일하게 채운다.
+	tenGi := resource.MustParse("10Gi")
+	qc.Spec.Persistence = qdrantv1alpha1.PersistenceSpec{Size: &tenGi, StorageClassName: "ceph-rbd", AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}}
+	qc.Spec.RunAsUser, qc.Spec.FSGroup = 1000, 3000
+	return qc
+}
+
+func findEnv(c corev1.Container, name string) *corev1.EnvVar {
+	for i := range c.Env {
+		if c.Env[i].Name == name {
+			return &c.Env[i]
+		}
+	}
+	return nil
+}
+
+func TestBuildStatefulSet_APIKey_WriteKey(t *testing.T) {
+	qc := apiKeyQC()
+	qc.Spec.APIKey = &qdrantv1alpha1.SecretKeyRef{Name: "qdrant-auth", Key: "api-key"}
+
+	c := BuildStatefulSet(qc).Spec.Template.Spec.Containers[0]
+	e := findEnv(c, "QDRANT__SERVICE__API_KEY")
+	if e == nil {
+		t.Fatal("apiKey 설정 시 env QDRANT__SERVICE__API_KEY 가 주입돼야 함")
+	}
+	// Secret 값은 valueFrom.secretKeyRef 로만 — Value(평문) 금지.
+	if e.Value != "" {
+		t.Fatalf("Value 는 비어야 함(평문 노출 금지), got %q", e.Value)
+	}
+	if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+		t.Fatal("QDRANT__SERVICE__API_KEY 는 secretKeyRef 여야 함")
+	}
+	if ref := e.ValueFrom.SecretKeyRef; ref.Name != "qdrant-auth" || ref.Key != "api-key" {
+		t.Fatalf("secretKeyRef=%+v (want name=qdrant-auth key=api-key)", ref)
+	}
+}
+
+func TestBuildStatefulSet_APIKey_ReadOnlyKey(t *testing.T) {
+	qc := apiKeyQC()
+	qc.Spec.ReadOnlyAPIKey = &qdrantv1alpha1.SecretKeyRef{Name: "qdrant-auth", Key: "read-only-key"}
+
+	c := BuildStatefulSet(qc).Spec.Template.Spec.Containers[0]
+	e := findEnv(c, "QDRANT__SERVICE__READ_ONLY_API_KEY")
+	if e == nil {
+		t.Fatal("readOnlyApiKey 설정 시 env QDRANT__SERVICE__READ_ONLY_API_KEY 가 주입돼야 함")
+	}
+	if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+		t.Fatal("QDRANT__SERVICE__READ_ONLY_API_KEY 는 secretKeyRef 여야 함")
+	}
+	if ref := e.ValueFrom.SecretKeyRef; ref.Name != "qdrant-auth" || ref.Key != "read-only-key" {
+		t.Fatalf("secretKeyRef=%+v (want name=qdrant-auth key=read-only-key)", ref)
+	}
+	// 쓰기 키를 안 줬으면 쓰기 API_KEY 는 주입되지 않아야 한다(두 키 독립).
+	if findEnv(c, "QDRANT__SERVICE__API_KEY") != nil {
+		t.Fatal("readOnly 만 설정했는데 쓰기 QDRANT__SERVICE__API_KEY 가 주입됨")
+	}
+}
+
+func TestBuildStatefulSet_APIKey_KeyDefault(t *testing.T) {
+	qc := apiKeyQC()
+	qc.Spec.APIKey = &qdrantv1alpha1.SecretKeyRef{Name: "qdrant-auth"} // Key 미지정
+
+	c := BuildStatefulSet(qc).Spec.Template.Spec.Containers[0]
+	e := findEnv(c, "QDRANT__SERVICE__API_KEY")
+	if e == nil || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+		t.Fatal("env QDRANT__SERVICE__API_KEY 누락")
+	}
+	// Key 미지정이면 빈 Secret 키(런타임 실패) 대신 'api-key' 로 방어.
+	if got := e.ValueFrom.SecretKeyRef.Key; got != "api-key" {
+		t.Fatalf("Key 미지정 시 기본 'api-key' 여야 함, got %q", got)
+	}
+}
+
+func TestBuildStatefulSet_APIKey_미설정parity(t *testing.T) {
+	// 인증 키를 안 준 CR 은 인증 env 를 하나도 추가하지 않아야 한다 — golden(helm) parity.
+	c := BuildStatefulSet(apiKeyQC()).Spec.Template.Spec.Containers[0]
+	if findEnv(c, "QDRANT__SERVICE__API_KEY") != nil || findEnv(c, "QDRANT__SERVICE__READ_ONLY_API_KEY") != nil {
+		t.Fatal("apiKey 미설정 CR 에 인증 env 가 주입됨 — golden parity 위반")
+	}
+	// env 는 QDRANT_INIT_FILE_PATH 하나뿐이어야 한다.
+	if len(c.Env) != 1 {
+		t.Fatalf("미설정 CR env 개수=%d (want 1: QDRANT_INIT_FILE_PATH 만)", len(c.Env))
+	}
+}
