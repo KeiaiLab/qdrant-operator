@@ -235,6 +235,11 @@ func (in *QdrantClusterSpec) DeepCopyInto(out *QdrantClusterSpec) {
 		*out = new(SecretKeyRef)
 		**out = **in
 	}
+	if in.ReadOnlyAPIKey != nil {
+		in, out := &in.ReadOnlyAPIKey, &out.ReadOnlyAPIKey
+		*out = new(SecretKeyRef)
+		**out = **in
+	}
 	if in.Rebalance != nil {
 		in, out := &in.Rebalance, &out.Rebalance
 		*out = new(RebalanceSpec)
