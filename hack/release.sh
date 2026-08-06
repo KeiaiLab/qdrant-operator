@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# OSS 릴리스 단일 진입점 — 게이트부터 5채널 발행까지 한 번에.
+# OSS 릴리스 단일 진입점 — 게이트부터 4채널 발행까지 한 번에.
 #
-# 왜 단일 명령인가: 채널이 5개(GitHub 태그 / 컨테이너 이미지(registry.keiailab.com) /
-# ghcr 이미지(values.yaml image.repository 기본값) / ghcr chart / 중앙 카탈로그)
-# 라 수동 절차는 반드시 하나를 빠뜨린다(2026-07-21 실측: 라이브 v0.6.0 인데 공개 chart
-# 0.4.0 — 2버전 잠복). 절차를 사람이 기억하지 않도록 코드에 고정한다.
+# 왜 단일 명령인가: 채널이 4개(GitHub 태그 / ghcr 이미지(values.yaml image.repository
+# 기본값) / ghcr chart / 중앙 카탈로그)라 수동 절차는 반드시 하나를 빠뜨린다
+# (2026-07-21 실측: 라이브 v0.6.0 인데 공개 chart 0.4.0 — 2버전 잠복).
+# 절차를 사람이 기억하지 않도록 코드에 고정한다.
+#
+# GitLab 미러(unarchive→push→archive)와 registry.keiailab.com 이미지 채널은
+# 2026-08-06 제거 — Forgejo 이관 완료로 gitlab.keiailab.com(웹·API)과
+# registry.keiailab.com(/v2/)이 은퇴해 전부 404. 남겨두면 step4 의 glab 호출이
+# set -e 로 릴리스 전체를 중단시킨다(v0.8.0 발행 지연의 원인).
 #
 # 사용: hack/release.sh 0.7.0        (버전은 chart semver — 이미지/태그는 v 접두)
 #       DRY_RUN=1 hack/release.sh 0.7.0   (발행 없이 단계만 출력)
@@ -19,13 +24,11 @@ cd "$repo_root"
 chart_yaml="deploy/chart/Chart.yaml"
 chart_name="$(awk '/^name:/ {print $2; exit}' "$chart_yaml")"
 tag="v${version}"
-image_repo="${IMAGE_REPO:-registry.keiailab.com/keiailab/oss/${chart_name}}"
 # ghcr 이미지 채널 — deploy/chart/values.yaml image.repository 기본값과 정합해야
 # image.tag 미지정 소비자(라이브 Flux 포함)가 실제로 pull 가능해진다.
 ghcr_image_repo="${GHCR_IMAGE_REPO:-ghcr.io/keiailab/${chart_name}}"
 ghcr_repo="${GHCR_REPO:-oci://ghcr.io/keiailab/charts}"
 charts_repo_dir="${CHARTS_REPO_DIR:-${repo_root}/../charts}"
-gitlab_mirror_project="${GITLAB_MIRROR_PROJECT:-294}" # archived 미러 — push 창에만 unarchive
 dry="${DRY_RUN:-0}"
 
 run() { if ((dry)); then printf '  [dry] %s\n' "$*"; else "$@"; fi; }
@@ -54,15 +57,10 @@ run git push origin main
 run git tag "$tag"
 run git push origin "$tag"
 
-step "4/7 컨테이너 이미지 (linux/amd64 단일 · default 빌더)"
-run docker --context=default buildx build --builder default --platform linux/amd64 -t "${image_repo}:${tag}" --load .
-run glab api --method POST "projects/${gitlab_mirror_project}/unarchive"
-run docker push "${image_repo}:${tag}"
-run glab api --method POST "projects/${gitlab_mirror_project}/archive"
-# ghcr 이미지 채널(values.yaml image.repository 기본값) — glab archive 창 밖에서
-# 태그·푸시해 GitLab unarchive 창을 최소화한다. 자격증명은 step5(helm push
-# oci://ghcr.io/…)와 동일한 `docker login ghcr.io`(write:packages) 전제 — 신규 인증경로 아님.
-run docker tag "${image_repo}:${tag}" "${ghcr_image_repo}:${tag}"
+step "4/7 컨테이너 이미지 (linux/amd64 단일 · default 빌더 → ghcr)"
+# 자격증명은 step5(helm push oci://ghcr.io/…)와 동일한 `docker login ghcr.io`
+# (write:packages) 전제 — 신규 인증경로 아님.
+run docker --context=default buildx build --builder default --platform linux/amd64 -t "${ghcr_image_repo}:${tag}" --load .
 run docker push "${ghcr_image_repo}:${tag}"
 
 step "5/7 helm chart → ghcr OCI"
@@ -101,7 +99,7 @@ else
 	# ghcr/카탈로그 전파에 수 초 걸릴 수 있어 짧게 재시도한다.
 	for i in 1 2 3 4 5; do
 		if bash hack/verify-publish.sh "$version"; then
-			printf '\n✓ 릴리스 %s 완결 — 5채널 일치\n' "$tag"
+			printf '\n✓ 릴리스 %s 완결 — 4채널 일치\n' "$tag"
 			exit 0
 		fi
 		printf '  … 전파 대기 재시도 %d/5\n' "$i"

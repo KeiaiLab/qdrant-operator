@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# OSS 발행 5채널 일치 검증 — GitHub 태그 / 컨테이너 이미지 / ghcr 이미지 / ghcr chart / 중앙 카탈로그.
+# OSS 발행 4채널 일치 검증 — GitHub 태그 / ghcr 이미지 / ghcr chart / 중앙 카탈로그.
 #
 # 배경: 라이브(Flux)는 GitHub main 을 직접 추적해 자동으로 최신이 되지만, 공개 배포
 # 채널(chart)은 릴리스마다 사람이 발행해야 해서 조용히 뒤처진다(2026-07-21 실측:
 # 라이브 v0.6.0 인데 ArtifactHub 0.4.0). 이 스크립트가 그 drift 를 결정론으로 잡는다.
+# registry.keiailab.com 채널 검사는 2026-08-06 제거 — Forgejo 이관 완료로
+# GitLab(레지스트리 포함)이 은퇴, hack/release.sh 도 동일 커밋에서 4채널로 정리.
 #
 # 사용: hack/verify-publish.sh [version]   (인자 없으면 Chart.yaml 의 version 사용)
 set -euo pipefail
@@ -15,8 +17,6 @@ version="${1:-$(awk '/^version:/ {print $2; exit}' "$chart_yaml")}"
 app_version="$(awk '/^appVersion:/ {gsub(/"/,"",$2); print $2; exit}' "$chart_yaml")"
 
 github_repo="${GITHUB_REPO:-KeiaiLab/${chart_name}}"
-image_repo="${IMAGE_REPO:-registry.keiailab.com/keiailab/oss/${chart_name}}"
-image_registry_host="${image_repo%%/*}"
 ghcr_chart="${GHCR_CHART:-keiailab/charts/${chart_name}}"
 # ghcr 이미지 채널 — deploy/chart/values.yaml image.repository 기본값(ghcr.io/…)과 정합.
 ghcr_image="${GHCR_IMAGE:-keiailab/${chart_name}}"
@@ -53,27 +53,7 @@ if [[ -n "$latest_tag" && "$latest_tag" != "$app_version" ]]; then
 	bad "GitHub 최신 태그는 ${latest_tag} — chart(${app_version})가 뒤처짐"
 fi
 
-# 2) 컨테이너 이미지 (익명 pull 토큰 경유 — 공개성까지 함께 검증)
-#
-# 토큰 발급처는 레지스트리 호스트가 아니라 인증 서버(GitLab)다 — 레지스트리가 401 과 함께
-# 돌려주는 WWW-Authenticate 의 realm/service 를 그대로 따른다(호스트 하드코딩 회피).
-auth_hdr="$(curl -sSI "https://${image_registry_host}/v2/${image_repo#*/}/manifests/${app_version}" 2>/dev/null |
-	tr -d '\r' | awk 'tolower($1)=="www-authenticate:" {sub(/^[^ ]+ /,""); print; exit}')"
-auth_realm="$(printf '%s' "$auth_hdr" | sed -n 's/.*realm="\([^"]*\)".*/\1/p')"
-auth_service="$(printf '%s' "$auth_hdr" | sed -n 's/.*service="\([^"]*\)".*/\1/p')"
-img_token=''
-if [[ -n "$auth_realm" ]]; then
-	img_token="$(curl -fsSL "${auth_realm}?service=${auth_service}&scope=repository:${image_repo#*/}:pull" 2>/dev/null |
-		python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || echo '')"
-fi
-img_code="$(curl -sS -o /dev/null -w '%{http_code}' \
-	-H "Authorization: Bearer ${img_token}" \
-	-H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
-	"https://${image_registry_host}/v2/${image_repo#*/}/manifests/${app_version}" 2>/dev/null || echo 000)"
-[[ "$img_code" == "200" ]] && ok "이미지 ${image_repo}:${app_version} 익명 pull 가능" \
-	|| bad "이미지 ${image_repo}:${app_version} 익명 조회 실패(HTTP ${img_code}) — 미발행 또는 비공개"
-
-# 3) ghcr chart (OCI, 익명)
+# 2) ghcr chart (OCI, 익명)
 ghcr_token="$(curl -fsSL "https://ghcr.io/token?scope=repository:${ghcr_chart}:pull" 2>/dev/null |
 	python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || echo '')"
 ghcr_code="$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -83,7 +63,7 @@ ghcr_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 [[ "$ghcr_code" == "200" ]] && ok "chart oci://ghcr.io/${ghcr_chart}:${version} 익명 pull 가능" \
 	|| bad "chart ghcr ${version} 익명 조회 실패(HTTP ${ghcr_code}) — helm push 누락 또는 패키지 비공개"
 
-# 3b) ghcr 오퍼레이터 이미지 (values.yaml image.repository 기본값, 익명 pull) — 태그는 v 접두 app_version
+# 2b) ghcr 오퍼레이터 이미지 (values.yaml image.repository 기본값, 익명 pull) — 태그는 v 접두 app_version
 ghcr_img_token="$(curl -fsSL "https://ghcr.io/token?scope=repository:${ghcr_image}:pull" 2>/dev/null |
 	python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || echo '')"
 ghcr_img_code="$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -93,7 +73,7 @@ ghcr_img_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 [[ "$ghcr_img_code" == "200" ]] && ok "이미지 ghcr.io/${ghcr_image}:${app_version} 익명 pull 가능" \
 	|| bad "이미지 ghcr.io/${ghcr_image}:${app_version} 익명 조회 실패(HTTP ${ghcr_img_code}) — docker push 누락 또는 패키지 비공개"
 
-# 4) 중앙 카탈로그(ArtifactHub 가 크롤하는 index)
+# 3) 중앙 카탈로그(ArtifactHub 가 크롤하는 index)
 idx_version="$(curl -fsSL "$catalog_index" 2>/dev/null | python3 -c "
 import sys,re
 name='${chart_name}'
@@ -117,4 +97,4 @@ if ((fail)); then
 	printf '\n✗ 발행 일관성 위반 — 위 항목을 해소해야 릴리스가 완결된다(hack/release.sh 는 전 단계를 자동 수행).\n'
 	exit 1
 fi
-printf '\n✓ 발행 5채널 일치 (GitHub / 이미지 / ghcr 이미지 / ghcr chart / 카탈로그)\n'
+printf '\n✓ 발행 4채널 일치 (GitHub / ghcr 이미지 / ghcr chart / 카탈로그)\n'
