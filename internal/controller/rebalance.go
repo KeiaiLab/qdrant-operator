@@ -114,6 +114,8 @@ const (
 	settleLost         = "lost"
 	settleSettled      = "settled"
 	reasonDrainBlocked = "DrainBlocked"
+	reasonMoveFailed   = "MoveFailed"
+	reasonBalanced     = "Balanced"
 	phaseRunning       = "Running"
 	phaseDraining      = "Draining"
 	shardStateActive   = "Active"
@@ -204,7 +206,7 @@ func (r *QdrantClusterReconciler) settleActiveMove(qc *qdrantv1alpha1.QdrantClus
 		qc.Status.ActiveMove = nil
 		qc.Status.MoveBackoff++
 		d := backoff(qc.Status.MoveBackoff)
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: fmt.Sprintf("%s/%d 가 %s 내 관측되지 않음(lost-command) — %v 후 재계획", am.Collection, am.ShardID, moveAppearDeadline, d), ObservedGeneration: qc.Generation})
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: reasonMoveFailed, Message: fmt.Sprintf("%s/%d 가 %s 내 관측되지 않음(lost-command) — %v 후 재계획", am.Collection, am.ShardID, moveAppearDeadline, d), ObservedGeneration: qc.Generation})
 		commonsevents.EmitWarningf(r.Recorder, qc, "MoveFailed", "%s", "이동/드롭 명령 유실 — 재계획 예정")
 		return settleLost, d
 	}
@@ -236,7 +238,7 @@ func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdran
 	if err != nil {
 		qc.Status.ActiveMove = nil
 		qc.Status.MoveBackoff++
-		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: "MoveFailed", Message: err.Error(), ObservedGeneration: qc.Generation})
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: reasonMoveFailed, Message: err.Error(), ObservedGeneration: qc.Generation})
 		commonsevents.EmitWarning(r.Recorder, qc, "MoveFailed", err)
 		return backoff(qc.Status.MoveBackoff)
 	}
@@ -279,6 +281,13 @@ func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qd
 		qc.Status.PlannedMoves = append(qc.Status.PlannedMoves, mv.String())
 	}
 	if len(plan) == 0 {
+		// 균형에 도달했으면 이 함수가 켜둔 MoveFailed 를 여기서 회수한다. 계획이 비었다는
+		// 것은 그 이동이 더는 필요 없다는 뜻인데, 회수 경로가 없으면 조건이 영구히 남는다 —
+		// 라이브 실측 2026-08-22~26: 4일간 Degraded=True(MoveFailed)인데 전 21개 컬렉션이
+		// green 이고 문제 샤드는 양 피어 모두 Active 였다. 켤 줄만 알고 끌 줄 모르는 조건은
+		// 운영자에게 상시 빨간불로 보여 진짜 고장을 가린다.
+		clearMoveFailed(qc)
+
 		// 균형 — steady-state 무행동. 단 requeue 0(이벤트 대기만)이면 status 반영이 한 번
 		// 유실될 때(라이브 사례: v0.3.0 기동이 CRD 갱신을 앞질러 신필드 status.selector 가
 		// apiserver 에서 드롭) 재시도 이벤트가 없어 영구 미반영된다 — 완만한 주기로
@@ -289,6 +298,25 @@ func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qd
 		return phaseRunning, 2 * time.Minute // dry-run: 계획만 노출(재복제 포함 — 완전 수동 모드 일관)
 	}
 	return phaseRebalancing, r.issueActiveMove(ctx, qc, plan[0], kind, qcl)
+}
+
+// clearMoveFailed 는 **MoveFailed 사유로 켜진** Degraded 만 회수한다.
+// 다른 사유(ImmutableFieldChanged / DrainBlocked)는 각자 소유자가 따로 있으므로
+// 무조건 끄면 그쪽 신호를 삼킨다 — 조건은 켠 쪽이 끈다.
+func clearMoveFailed(qc *qdrantv1alpha1.QdrantCluster) {
+	c := meta.FindStatusCondition(qc.Status.Conditions, condDegraded)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != reasonMoveFailed {
+		return
+	}
+
+	qc.Status.MoveBackoff = 0
+	meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{
+		Type:               condDegraded,
+		Status:             metav1.ConditionFalse,
+		Reason:             reasonBalanced,
+		Message:            "이동 계획 없음 — 이전 MoveFailed 회수",
+		ObservedGeneration: qc.Generation,
+	})
 }
 
 // requeueOrNothing 은 phase 결과에 따른 ctrl.Result 조립 헬퍼.
