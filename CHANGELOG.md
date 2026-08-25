@@ -9,6 +9,18 @@ at release-tag time (`git cliff --tag vX.Y.Z`).
 
 ## [Unreleased]
 
+### Fixed
+
+- Stale `Degraded=True` (`MoveFailed`) never cleared once the rebalance plan
+  became empty. `reconcileRebalance` set the condition when a move failed but
+  only ever cleared it from the active-move settle path, so a cluster that had
+  since reached balance kept a permanent red light. Observed live 2026-08-22
+  through 2026-08-26: `Degraded=True` for four days while all 21 collections
+  were green and the shard named in the message was `Active` on both peers.
+  A condition that can be raised but not lowered hides the next real fault.
+  The balanced branch now clears the condition it owns, and only that one -
+  `DrainBlocked` and `ImmutableFieldChanged` belong to other paths.
+
 ## [0.7.0] - 2026-07-22
 
 ### Added
