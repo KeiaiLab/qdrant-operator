@@ -23,6 +23,8 @@ annotations:
       description: "Raft-aware rolling upgrades: the rollout advances only once the restarted peer rejoins consensus and every shard is Active."
     - kind: added
       description: "Prometheus metrics and alert rules for backups, dead replicas, rebalance convergence and gated rollouts."
+    - kind: added
+      description: "TLS: config.tls.secretName supplies the certificates the tlsEnabled switch always required; the operator connects over HTTPS verifying against the same CA."
 keywords:
   - qdrant
   - operator
