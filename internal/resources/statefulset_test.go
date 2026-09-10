@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"strings"
 	"testing"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
@@ -404,5 +405,63 @@ func TestBuildStatefulSet_APIKey_미설정parity(t *testing.T) {
 	// env 는 QDRANT_INIT_FILE_PATH 하나뿐이어야 한다.
 	if len(c.Env) != 1 {
 		t.Fatalf("미설정 CR env 개수=%d (want 1: QDRANT_INIT_FILE_PATH 만)", len(c.Env))
+	}
+}
+
+// snapshotFixture 는 statefulSetFixture 와 같은 최소 스펙에 스냅샷 설정만 얹은 CR 이다.
+func snapshotFixture() *qdrantv1alpha1.QdrantCluster {
+	qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: "data"}}
+	qc.Spec.Replicas = 1
+	qc.Spec.Image = qdrantv1alpha1.ImageSpec{Repository: "qdrant/qdrant", Tag: "v1.18.2"}
+	tenGi := resource.MustParse("10Gi")
+	qc.Spec.Persistence = qdrantv1alpha1.PersistenceSpec{Size: &tenGi, StorageClassName: "ceph-rbd", AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}}
+	qc.Spec.RunAsUser, qc.Spec.FSGroup = 1000, 3000
+	return qc
+}
+
+func TestStatefulSet_스냅샷S3Env(t *testing.T) {
+	qc := snapshotFixture()
+	qc.Spec.Snapshots = &qdrantv1alpha1.SnapshotsSpec{
+		Storage: qdrantv1alpha1.SnapshotStorageS3,
+		S3: &qdrantv1alpha1.S3StorageSpec{
+			Bucket: "b", EndpointURL: "http://rgw.svc:80",
+			Credentials: qdrantv1alpha1.S3CredentialsRef{Name: "rgw-creds"},
+		},
+	}
+	env := BuildStatefulSet(qc).Spec.Template.Spec.Containers[0].Env
+
+	byName := map[string]corev1.EnvVar{}
+	for _, e := range env {
+		byName[e.Name] = e
+	}
+
+	ep, ok := byName["QDRANT__STORAGE__SNAPSHOTS_CONFIG__S3_CONFIG__ENDPOINT_URL"]
+	if !ok || ep.Value != "http://rgw.svc:80" {
+		t.Fatalf("엔드포인트 env: %+v", ep)
+	}
+
+	// 자격은 반드시 secretKeyRef 로만 — Value 가 채워져 있으면 평문 유출이다.
+	for name, key := range map[string]string{
+		"QDRANT__STORAGE__SNAPSHOTS_CONFIG__S3_CONFIG__ACCESS_KEY": "AWS_ACCESS_KEY_ID",
+		"QDRANT__STORAGE__SNAPSHOTS_CONFIG__S3_CONFIG__SECRET_KEY": "AWS_SECRET_ACCESS_KEY",
+	} {
+		e, ok := byName[name]
+		if !ok {
+			t.Fatalf("%s 누락", name)
+		}
+		if e.Value != "" || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+			t.Fatalf("%s 가 secretKeyRef 가 아님: %+v", name, e)
+		}
+		if e.ValueFrom.SecretKeyRef.Name != "rgw-creds" || e.ValueFrom.SecretKeyRef.Key != key {
+			t.Fatalf("%s 참조 불일치: %+v", name, e.ValueFrom.SecretKeyRef)
+		}
+	}
+
+	// 미지정이면 env 가 하나도 늘지 않는다(golden parity).
+	qc.Spec.Snapshots = nil
+	for _, e := range BuildStatefulSet(qc).Spec.Template.Spec.Containers[0].Env {
+		if strings.Contains(e.Name, "SNAPSHOTS_CONFIG") {
+			t.Fatalf("미지정인데 env 가 샜다: %s", e.Name)
+		}
 	}
 }

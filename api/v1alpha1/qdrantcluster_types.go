@@ -62,6 +62,60 @@ type SecretKeyRef struct {
 	Key string `json:"key,omitempty"`
 }
 
+// SnapshotStorage 는 스냅샷이 어디에 쌓이는지다.
+//
+//	Local — 각 peer 의 PVC. 노드/볼륨이 죽으면 스냅샷도 함께 죽는다.
+//	S3    — qdrant 가 오브젝트 스토리지에 직접 쓴다. 오퍼레이터는 바이트를 만지지 않는다.
+//
+// +kubebuilder:validation:Enum=Local;S3
+type SnapshotStorage string
+
+const (
+	SnapshotStorageLocal SnapshotStorage = "Local"
+	SnapshotStorageS3    SnapshotStorage = "S3"
+)
+
+// SnapshotsSpec 은 스냅샷 보관 설정 — 미지정이면 qdrant 기본(Local)이고 렌더 산출물이
+// 바뀌지 않는다(기존 클러스터 회귀 0).
+type SnapshotsSpec struct {
+	// +kubebuilder:default="Local"
+	// +optional
+	Storage SnapshotStorage `json:"storage,omitempty"`
+	// S3 는 Storage=S3 일 때만 읽는다.
+	// +optional
+	S3 *S3StorageSpec `json:"s3,omitempty"`
+}
+
+// S3StorageSpec 은 S3 호환 오브젝트 스토리지 좌표다.
+type S3StorageSpec struct {
+	Bucket string `json:"bucket"`
+	// Region 은 RGW 처럼 리전을 강제하지 않는 구현에서도 서명에 필요하다.
+	// +kubebuilder:default="us-east-1"
+	// +optional
+	Region string `json:"region,omitempty"`
+	// EndpointURL 은 path-style 엔드포인트다. 사내 Ceph RGW 면
+	// http://rook-ceph-rgw-<store>.rook-ceph.svc:80 형태.
+	//
+	// 주의: NetworkPolicy/CNP 는 서비스 포트가 아니라 **DNAT 된 파드 포트**로 써야 한다
+	// (keiailab RGW 는 80 → 8080). 틀리면 403 이 아니라 조용한 타임아웃으로 나타난다.
+	EndpointURL string `json:"endpointURL"`
+	// Credentials 는 access/secret key 를 담은 Secret 이다. ObjectBucketClaim 이 만든
+	// Secret 이면 기본 키 이름이 그대로 맞는다.
+	Credentials S3CredentialsRef `json:"credentials"`
+}
+
+// S3CredentialsRef 는 S3 자격 Secret 참조다. 값은 secretKeyRef 로만 주입되고
+// ConfigMap(평문) 경로를 타지 않는다.
+type S3CredentialsRef struct {
+	Name string `json:"name"`
+	// +kubebuilder:default="AWS_ACCESS_KEY_ID"
+	// +optional
+	AccessKeyKey string `json:"accessKeyKey,omitempty"`
+	// +kubebuilder:default="AWS_SECRET_ACCESS_KEY"
+	// +optional
+	SecretKeyKey string `json:"secretKeyKey,omitempty"`
+}
+
 // QdrantClusterSpec defines the desired state of QdrantCluster
 type QdrantClusterSpec struct {
 	Image ImageSpec `json:"image,omitempty"`
@@ -88,6 +142,9 @@ type QdrantClusterSpec struct {
 	// (계획 status 노출만, 이동 미발행).
 	// +optional
 	Rebalance *RebalanceSpec `json:"rebalance,omitempty"`
+	// Snapshots 는 스냅샷 보관 위치 — 미지정이면 qdrant 기본(각 peer PVC)이다.
+	// +optional
+	Snapshots *SnapshotsSpec `json:"snapshots,omitempty"`
 
 	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
 	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`

@@ -33,6 +33,13 @@ const (
 // 허용해 상수를 공유할 수 없으므로 값 일치를 주석으로 강제한다.
 const DefaultAPIKeySecretKey = "api-key"
 
+// S3 자격 Secret 의 기본 데이터 키 — ObjectBucketClaim 이 만드는 Secret 의 키 이름과 같다.
+const (
+	DefaultS3AccessKeyKey = "AWS_ACCESS_KEY_ID"
+	DefaultS3SecretKeyKey = "AWS_SECRET_ACCESS_KEY"
+	DefaultS3Region       = "us-east-1"
+)
+
 // 컨테이너 마운트 경로 — ConfigMountDir 와 동일 패턴. golden 컨테이너 volumeMounts SSOT.
 // InitMountDir 는 마운트와 QDRANT_INIT_FILE_PATH env 값이 함께 참조하므로 상수화가 필수다.
 const (

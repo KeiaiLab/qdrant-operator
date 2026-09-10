@@ -87,7 +87,7 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 						Args:    []string{"./config/initialize.sh"},
 						Env: append([]corev1.EnvVar{
 							{Name: "QDRANT_INIT_FILE_PATH", Value: InitMountDir + "/.qdrant-initialized"},
-						}, apiKeyEnv(qc)...),
+						}, append(apiKeyEnv(qc), snapshotS3Env(qc)...)...),
 						Resources: res,
 						Ports: []corev1.ContainerPort{
 							{Name: "http", ContainerPort: RESTPort, Protocol: corev1.ProtocolTCP},
@@ -159,6 +159,34 @@ func apiKeyEnv(qc *qdrantv1alpha1.QdrantCluster) []corev1.EnvVar {
 		env = append(env, secretEnv("QDRANT__SERVICE__READ_ONLY_API_KEY", ref))
 	}
 	return env
+}
+
+// snapshotS3Env 는 S3 보관에 필요한 세 값을 qdrant 이중언더스코어 env 로 만든다.
+// 엔드포인트는 비밀이 아니라 평문 value 로, 자격 둘은 secretKeyRef 로만 넣는다.
+// 미설정이면 nil 이라 STS env 가 늘지 않는다(golden parity).
+func snapshotS3Env(qc *qdrantv1alpha1.QdrantCluster) []corev1.EnvVar {
+	sn := qc.Spec.Snapshots
+	if sn == nil || sn.Storage != qdrantv1alpha1.SnapshotStorageS3 || sn.S3 == nil {
+		return nil
+	}
+
+	const prefix = "QDRANT__STORAGE__SNAPSHOTS_CONFIG__S3_CONFIG__"
+	creds := sn.S3.Credentials
+
+	accessKey := creds.AccessKeyKey
+	if accessKey == "" {
+		accessKey = DefaultS3AccessKeyKey
+	}
+	secretKey := creds.SecretKeyKey
+	if secretKey == "" {
+		secretKey = DefaultS3SecretKeyKey
+	}
+
+	return []corev1.EnvVar{
+		{Name: prefix + "ENDPOINT_URL", Value: sn.S3.EndpointURL},
+		secretEnv(prefix+"ACCESS_KEY", &qdrantv1alpha1.SecretKeyRef{Name: creds.Name, Key: accessKey}),
+		secretEnv(prefix+"SECRET_KEY", &qdrantv1alpha1.SecretKeyRef{Name: creds.Name, Key: secretKey}),
+	}
 }
 
 // secretEnv 는 SecretKeyRef 를 secretKeyRef env 로 변환한다. Key 가 비면 'api-key' 로 방어

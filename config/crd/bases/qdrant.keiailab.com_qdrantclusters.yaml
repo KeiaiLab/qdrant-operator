@@ -1124,6 +1124,57 @@ spec:
                 default: ClusterIP
                 description: Service Type string describes ingress methods for a service
                 type: string
+              snapshots:
+                description: Snapshots 는 스냅샷 보관 위치 — 미지정이면 qdrant 기본(각 peer PVC)이다.
+                properties:
+                  s3:
+                    description: S3 는 Storage=S3 일 때만 읽는다.
+                    properties:
+                      bucket:
+                        type: string
+                      credentials:
+                        description: |-
+                          Credentials 는 access/secret key 를 담은 Secret 이다. ObjectBucketClaim 이 만든
+                          Secret 이면 기본 키 이름이 그대로 맞는다.
+                        properties:
+                          accessKeyKey:
+                            default: AWS_ACCESS_KEY_ID
+                            type: string
+                          name:
+                            type: string
+                          secretKeyKey:
+                            default: AWS_SECRET_ACCESS_KEY
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      endpointURL:
+                        description: |-
+                          EndpointURL 은 path-style 엔드포인트다. 사내 Ceph RGW 면
+                          http://rook-ceph-rgw-<store>.rook-ceph.svc:80 형태.
+
+                          주의: NetworkPolicy/CNP 는 서비스 포트가 아니라 **DNAT 된 파드 포트**로 써야 한다
+                          (keiailab RGW 는 80 → 8080). 틀리면 403 이 아니라 조용한 타임아웃으로 나타난다.
+                        type: string
+                      region:
+                        default: us-east-1
+                        description: Region 은 RGW 처럼 리전을 강제하지 않는 구현에서도 서명에 필요하다.
+                        type: string
+                    required:
+                    - bucket
+                    - credentials
+                    - endpointURL
+                    type: object
+                  storage:
+                    default: Local
+                    description: "SnapshotStorage 는 스냅샷이 어디에 쌓이는지다.\n\n\tLocal — 각
+                      peer 의 PVC. 노드/볼륨이 죽으면 스냅샷도 함께 죽는다.\n\tS3    — qdrant 가 오브젝트
+                      스토리지에 직접 쓴다. 오퍼레이터는 바이트를 만지지 않는다."
+                    enum:
+                    - Local
+                    - S3
+                    type: string
+                type: object
               tolerations:
                 items:
                   description: |-
