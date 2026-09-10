@@ -10,6 +10,8 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-10
+
 ### Fixed
 
 - The security scan had been red since 2026-08-25 — on a commit that passed
@@ -33,6 +35,22 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ### Added
 
+- TLS certificates. `config.tlsEnabled` already switched on TLS for both the
+  client API and peer-to-peer Raft traffic, but nothing supplied certificates
+  — and Qdrant refuses to start when either is enabled without a `tls`
+  section, so the flag produced a cluster that could not boot. Point
+  `config.tls.secretName` at a Secret and the operator mounts it, renders the
+  paths, flips the readiness probe to HTTPS, and connects over HTTPS itself
+  verifying against the CA from the same Secret. There is no option to skip
+  verification: once it exists for internal traffic it becomes the default,
+  and losing that connection blinds the rebalancer, the backup controller and
+  the upgrade gate at once. cert-manager's Certificate secret works
+  unmodified; running our own CA was rejected as a reimplementation of it.
+  `tlsEnabled` without a Secret now reports `Degraded(TLSSecretMissing)`
+  instead of applying a configuration that crash-loops. Note that
+  `certTTLSeconds` reloads renewed certificates without a restart for HTTPS
+  only — the peer certificate still needs one, which is what the health-gated
+  rollout is for.
 - `QdrantBackup` — declarative snapshot backups. Snapshots in Qdrant are
   node-local: a request captures only the shards on the peer that answered
   it, so one backup generation is (collections × peers) and the controller
@@ -44,16 +62,18 @@ fix looks the way it does. A one-line subject is not a changelog.
   Retention is the only destructive path and stays off unless declared. An
   unparseable cron surfaces as `Degraded` rather than a backup that silently
   never runs.
-- Prometheus metrics for the loops that can fail quietly, and a
-  `PrometheusRule` covering each one. The selection rule was "does a change
-  here mean someone must do something" — a backup that stopped, a backup that
-  captured nothing, dead replicas re-replication cannot clear, a rebalance
-  that will not converge, a peer that never rejoined, a rollout the health
-  gate is holding. Shard distribution and move plans stay in `status`, where
-  you look once you already know to look. Series are dropped when their CR is
-  deleted; leaving them pins a deleted cluster's last value and alerts on it
-  forever. Metrics without rules end up on a dashboard nobody reads, which is
-  indistinguishable from having none.
+- `QdrantRestore` — one-shot restore of a collection from a backup generation.
+  Restore is per-node too, so the CR fans out one recovery per peer, each
+  reading its own snapshot. Nothing is deleted to make room: Qdrant's guidance
+  is to drop and recreate the collection first, but that deletion is
+  irreversible, and `priority: snapshot` (the default here) reaches the same
+  end state without it. A completed restore never runs again — re-running one
+  would silently roll back everything written since.
+- `spec.snapshots` on `QdrantCluster` points snapshot storage at S3-compatible
+  object storage. Qdrant writes there itself — the operator never handles the
+  bytes, which matters for a controller capped at 128Mi. Bucket and region go
+  into the ConfigMap; the credentials go in as env via `secretKeyRef` only.
+  Unset or `Local` renders byte-identical output to before.
 - Raft-aware rolling upgrades. A StatefulSet's own rollout advances on pod
   readiness alone, and in a distributed Qdrant that is too early: `/readyz`
   answers before the restarted peer has rejoined consensus and before its
@@ -67,34 +87,32 @@ fix looks the way it does. A one-line subject is not a changelog.
   and gating on it would repeat the deadlock fixed in 0.9.0. Rebalancing
   pauses for the duration. Outside a rollout the rendered StatefulSet is
   unchanged.
-- `QdrantRestore` — one-shot restore of a collection from a backup generation.
-  Restore is per-node too, so the CR fans out one recovery per peer, each
-  reading its own snapshot. Nothing is deleted to make room: Qdrant's guidance
-  is to drop and recreate the collection first, but that deletion is
-  irreversible, and `priority: snapshot` (the default here) reaches the same
-  end state without it. A completed restore never runs again — re-running one
-  would silently roll back everything written since.
-- `spec.snapshots` on `QdrantCluster` points snapshot storage at S3-compatible
-  object storage. Qdrant writes there itself — the operator never handles the
-  bytes, which matters for a controller capped at 128Mi. Bucket and region go
-  into the ConfigMap; the credentials go in as env via `secretKeyRef` only.
-  Unset or `Local` renders byte-identical output to before.
+- Prometheus metrics for the loops that can fail quietly, and a
+  `PrometheusRule` covering each one. The selection rule was "does a change
+  here mean someone must do something" — a backup that stopped, a backup that
+  captured nothing, dead replicas re-replication cannot clear, a rebalance
+  that will not converge, a peer that never rejoined, a rollout the health
+  gate is holding. Shard distribution and move plans stay in `status`, where
+  you look once you already know to look. Series are dropped when their CR is
+  deleted; leaving them pins a deleted cluster's last value and alerts on it
+  forever. Metrics without rules end up on a dashboard nobody reads, which is
+  indistinguishable from having none.
 - `make chart-crds` / `make chart-crds-check`. The chart's CRD bundle was a
   hand-maintained concatenation of the generated CRDs and had already fallen
   behind when this was noticed — a chart install would have rejected the new
   field while the operator itself accepted it, which shows up as the user's
   CRs being refused for no visible reason. Generated now, and gated in CI and
   at release.
-- A `report-failure` job that opens or refreshes a single tracking issue when
-  the scheduled security scan fails. The previous failure went unnoticed for
-  two weeks because a red cron notifies nobody, and a gate people learn to
-  ignore is worse than no gate.
 - `make doc-drift` — a release gate and CI job that fails when a Kind with a
   controller is still described as planned in any README, or when the publish
   channel count in the docs disagrees with `hack/release.sh`. Both checks are
   mechanical. Written after 0.9.0 had to correct documentation that had been
   three releases behind the code: the drift was never anyone's task, so it
   never got done. A check does not forget.
+- A `report-failure` job that opens or refreshes a single tracking issue when
+  the scheduled security scan fails. The previous failure went unnoticed for
+  two weeks because a red cron notifies nobody, and a gate people learn to
+  ignore is worse than no gate.
 
 ## [0.9.0] - 2026-09-10
 

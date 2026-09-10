@@ -50,9 +50,40 @@ type ConfigSpec struct {
 	// +kubebuilder:default=true
 	ClusterEnabled bool `json:"clusterEnabled,omitempty"`
 	TLSEnabled     bool `json:"tlsEnabled,omitempty"`
+	// TLS 는 인증서 출처다. TLSEnabled=true 면 **반드시** 있어야 한다 — qdrant 는
+	// service/p2p TLS 가 켜졌는데 tls 설정이 없으면 기동하지 못한다.
+	// +optional
+	TLS *TLSSpec `json:"tls,omitempty"`
 	// production.yaml 전체 passthrough (escape hatch)
 	// +kubebuilder:pruning:PreserveUnknownFields
 	RawOverride *apiextensionsv1.JSON `json:"rawOverride,omitempty"`
+}
+
+// TLSSpec 은 서버 인증서가 담긴 Secret 참조다.
+//
+// 오퍼레이터는 인증서를 발급하지 않는다. cert-manager 의 Certificate 가 만드는 Secret 이
+// 그대로 맞고(기본 키 이름이 그것이다), 손으로 만든 Secret 도 같은 모양이면 된다.
+// 자체 CA 를 굴리는 쪽은 cert-manager 재발명이고, 회전과 신뢰 배포가 그런 구현이 깨지는
+// 자리라 의도적으로 택하지 않았다.
+type TLSSpec struct {
+	// SecretName 은 같은 네임스페이스의 Secret 이름이다.
+	SecretName string `json:"secretName"`
+	// +kubebuilder:default="tls.crt"
+	// +optional
+	CertKey string `json:"certKey,omitempty"`
+	// +kubebuilder:default="tls.key"
+	// +optional
+	KeyKey string `json:"keyKey,omitempty"`
+	// CACertKey 는 peer 간 통신에서 상대 인증서를 검증하는 CA 다.
+	// cluster.p2p.enable_tls 가 켜지면 qdrant 가 이것을 요구한다.
+	// +kubebuilder:default="ca.crt"
+	// +optional
+	CACertKey string `json:"caCertKey,omitempty"`
+	// CertTTLSeconds 는 qdrant 가 디스크에서 인증서를 다시 읽는 주기다(HTTPS 한정 —
+	// p2p 는 재기동이 필요하다). cert-manager 갱신을 무중단으로 흡수하는 자리다.
+	// +kubebuilder:default=3600
+	// +optional
+	CertTTLSeconds int32 `json:"certTTLSeconds,omitempty"`
 }
 
 // SecretKeyRef는 API 키를 담은 Secret 참조다

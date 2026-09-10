@@ -40,6 +40,10 @@ const (
 // 완료된 복원은 다시 돌지 않는다 — CR 이 남아 있다는 이유로 재복원하면 그 뒤에 들어온
 // 데이터를 조용히 되돌린다. 다시 하려면 CR 을 새로 만든다.
 type QdrantRestoreReconciler struct {
+	// APIReader 는 캐시를 거치지 않는 읽기다. TLS CA 를 담은 Secret 을 읽는 데만 쓴다 —
+	// Secret 을 매니저 캐시에 올리면 범위 안 모든 Secret 을 들고 있게 되고, 이 컨트롤러의
+	// 메모리 상한은 128Mi 다.
+	APIReader client.Reader
 	client.Client
 	Scheme              *runtime.Scheme
 	Recorder            events.EventRecorder
@@ -186,10 +190,12 @@ func (r *QdrantRestoreReconciler) commitRestore(ctx context.Context, rs *qdrantv
 }
 
 func (r *QdrantRestoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	if r.QdrantClientForPeer == nil {
 		r.QdrantClientForPeer = func(cluster *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client {
-			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s-%d.%s.%s.svc:%d",
-				cluster.Name, ordinal, resources.HeadlessName(cluster), cluster.Namespace, resources.RESTPort))
+			return newClusterClient(context.Background(), r.APIReader, cluster, peerBaseURL(cluster, ordinal))
 		}
 	}
 	r.Recorder = mgr.GetEventRecorder("qdrantrestore")

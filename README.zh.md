@@ -171,6 +171,32 @@ Controller 通过 controller-runtime 的标准端点暴露 Prometheus 指标。�
 
 CR 被删除时其时间序列也会一并清除 —— 否则已删除集群的最后一个值会被永久固定,并持续触发告警。
 
+## TLS
+
+`config.tlsEnabled` 会**同时**为客户端 API 与 peer 间 Raft 通信启用 TLS —— Qdrant 把这两者视为同一个开关,本 operator 也是如此。此前缺失的是证书:只打开开关而没有 `tls` 段,Qdrant 无法启动。
+
+Operator 不签发证书。指向一个 Secret,其余由它接线:
+
+```yaml
+spec:
+  config:
+    tlsEnabled: true
+    tls:
+      secretName: qdrant-tls   # cert-manager 的 Certificate Secret 可直接使用
+      # certKey / keyKey / caCertKey 默认为 tls.crt / tls.key / ca.crt
+      certTTLSeconds: 3600     # Qdrant 从磁盘重新读取证书的间隔
+```
+
+cert-manager 的 `Certificate` 生成的 Secret 正是这个形状,无需转换;用相同键手工创建的 Secret 同样可用。自建 CA 的方案经权衡后被否决 —— 那是在重新发明 cert-manager,而轮换与信任分发恰恰是此类实现出问题的地方。
+
+启用后会带来三点:
+
+- readiness 探针切换为 HTTPS。若仍用 HTTP 将永远不会成功,pod 也就永远不会 Ready。
+- Operator 自身也通过 HTTPS 连接,并用同一个 Secret 中的 CA 校验服务端。没有跳过校验的选项 —— 哪怕是内部流量,一旦可以跳过,它就会变成默认。失去这条连接,会让重新平衡、备份与升级门禁同时失明。
+- `certTTLSeconds` 可以在不重启的情况下加载续期后的证书,但**仅限 HTTPS**。peer 间证书的更换仍需重启 pod,而该重启会走上文的健康门禁。
+
+若只设置 `tlsEnabled` 而没有 Secret,operator 不会改动 StatefulSet,而是报告 `Degraded(TLSSecretMissing)`,不去应用一个必然崩溃循环的配置。
+
 ## 诚实的局限性(请务必阅读)
 
 相较于"新增功能",本 Operator 更看重"从结构上防止破坏性失误"。
@@ -248,7 +274,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | Operator 基础 + 预置 | `QdrantCluster` | scaffold、controller、RBAC + 声明式分布式集群启动 | — | **已完成** |
 | **B** | 集合(Collection)/ shard 编排 | `QdrantCollection` | 声明式集合 + auto-rebalance(观测 → 规划 → `move_shard`)+ 复制因子修复 + alias re-shard + 安全的 scale-in drain | A | **已完成** |
 | **C** | 数据保护 | `QdrantBackup` / `QdrantRestore` | 全 peer 的 snapshot API 定时备份、S3 对象存储、保留策略、恢复 | A | **已完成** |
-| **D** | Day-2 / 升级 | (status / metrics) | Raft 感知的滚动升级、health gate、可观测性(observability)、TLS | A | **仅剩 TLS** |
+| **D** | Day-2 / 升级 | (status / metrics) | Raft 感知的滚动升级、health gate、可观测性(observability)、TLS | A | **已完成** |
 | **E** | 自动扩缩容集成 | (`/scale` subresource) | 扩缩容触发器 → 接入 Phase B 的 rebalance 机制 | B | **已完成** —— KEDA 或 HPA 可直接扩缩 `QdrantCluster`,无需专用 CRD |
 
 依赖关系图:`A → {B, C, D}` 可以并行推进,`E` 则需要 `B` 先完成。Phase B(shard 重新平衡自动化)是本项目的核心价值所在。

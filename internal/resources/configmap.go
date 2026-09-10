@@ -59,12 +59,37 @@ func snapshotsYAML(qc *qdrantv1alpha1.QdrantCluster) string {
 `, sn.S3.Bucket, region)
 }
 
+// tlsYAML 은 인증서 경로 블록이다. qdrant 는 service/p2p TLS 가 켜지면 이 섹션을 요구한다 —
+// 없으면 기동하지 못한다. 경로는 Secret 마운트 지점이고, Secret 이름 자체는 여기 오지 않는다.
+//
+// cert_ttl 은 qdrant 가 디스크에서 인증서를 다시 읽는 주기다. cert-manager 갱신을 재기동
+// 없이 흡수하지만 **HTTPS 한정**이다 — p2p 인증서 교체는 여전히 파드 재기동이 필요하고,
+// 그 재기동은 롤링 업그레이드 게이트가 안전하게 처리한다.
+func tlsYAML(qc *qdrantv1alpha1.QdrantCluster) string {
+	tls := qc.Spec.Config.TLS
+	if !qc.Spec.Config.TLSEnabled || tls == nil {
+		return ""
+	}
+
+	ttl := tls.CertTTLSeconds
+	if ttl <= 0 {
+		ttl = DefaultCertTTLSeconds
+	}
+
+	return fmt.Sprintf(`tls:
+  cert: %s/%s
+  key: %s/%s
+  ca_cert: %s/%s
+  cert_ttl: %d
+`, TLSMountDir, TLSCertFile, TLSMountDir, TLSKeyFile, TLSMountDir, TLSCACertFile, ttl)
+}
+
 func productionYAML(qc *qdrantv1alpha1.QdrantCluster) string {
 	tls := "false"
 	if qc.Spec.Config.TLSEnabled {
 		tls = "true"
 	}
-	return snapshotsYAML(qc) + fmt.Sprintf(`cluster:
+	return tlsYAML(qc) + snapshotsYAML(qc) + fmt.Sprintf(`cluster:
   consensus:
     tick_period_ms: 100
   enabled: %t

@@ -171,6 +171,32 @@ spec:
 
 CR 이 사라지면 그 시계열도 걷어낸다 — 남겨두면 삭제된 클러스터의 마지막 값이 고정돼 영원히 알럿을 울린다.
 
+## TLS
+
+`config.tlsEnabled` 는 client API 와 peer 간 Raft 통신의 TLS 를 **함께** 켠다 — qdrant 가 그 둘을 한 스위치로 다루고, 이 오퍼레이터도 그렇다. 지금까지 빠져 있던 것은 인증서다. 플래그만 켜고 `tls` 섹션이 없으면 qdrant 는 기동하지 못한다.
+
+오퍼레이터는 인증서를 발급하지 않는다. Secret 을 가리키면 나머지를 배선한다.
+
+```yaml
+spec:
+  config:
+    tlsEnabled: true
+    tls:
+      secretName: qdrant-tls   # cert-manager 의 Certificate Secret 이 그대로 맞는다
+      # certKey / keyKey / caCertKey 기본값은 tls.crt / tls.key / ca.crt
+      certTTLSeconds: 3600     # qdrant 가 디스크에서 인증서를 다시 읽는 주기
+```
+
+cert-manager `Certificate` 가 만드는 Secret 이 정확히 이 모양이라 변환이 필요 없고, 같은 키로 손수 만든 Secret 도 된다. 자체 CA 를 굴리는 안은 검토 후 기각했다 — cert-manager 재발명이고, 회전과 신뢰 배포가 바로 그런 구현이 깨지는 자리다.
+
+켜면 따라오는 것이 셋이다.
+
+- readiness 프로브가 HTTPS 로 바뀐다. HTTP 로 두면 영영 성공하지 못해 파드가 Ready 가 되지 않는다.
+- 오퍼레이터도 HTTPS 로 붙고, 같은 Secret 의 CA 로 서버를 검증한다. 검증을 끄는 선택지는 두지 않았다 — 내부 트래픽이라도 끄고 나면 그것이 기본값이 된다. 이 연결을 잃으면 리밸런서·백업·업그레이드 게이트가 한꺼번에 눈을 잃는다.
+- `certTTLSeconds` 로 갱신된 인증서를 재기동 없이 집어 들지만 **HTTPS 한정**이다. peer 간 인증서 교체는 여전히 파드 재기동이 필요하고, 그 재기동은 위의 건강 게이트를 통과한다.
+
+Secret 없이 `tlsEnabled` 만 켜면 오퍼레이터는 StatefulSet 을 건드리지 않고 `Degraded(TLSSecretMissing)` 로 보고한다. CrashLoop 이 될 설정을 적용하지 않는다.
+
 ## 정직한 한계 (반드시 읽어주세요)
 
 이 오퍼레이터는 "새 기능"보다 "파괴적 실수를 구조적으로 막는 것"에 무게를 둔다.
@@ -248,7 +274,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | 오퍼레이터 기반 + 프로비저닝 | `QdrantCluster` | scaffold · 컨트롤러 · RBAC + 선언적 분산 클러스터 기동 | — | **완료** |
 | **B** | 컬렉션 / shard 오케스트레이션 | `QdrantCollection` | 선언적 컬렉션 + auto-rebalance(관측 → 계획 → `move_shard`) + 복제 계수 수리 + alias re-shard + 안전한 scale-in drain | A | **완료** |
 | **C** | 데이터 보호 | `QdrantBackup` / `QdrantRestore` | 전 peer snapshot API 스케줄 백업 · S3 오브젝트 스토리지 · 보존기간 · 복원 | A | **완료** |
-| **D** | Day-2 / 업그레이드 | (status / metrics) | Raft-aware 롤링 업그레이드 · health gate · observability · TLS | A | **TLS 만 남음** |
+| **D** | Day-2 / 업그레이드 | (status / metrics) | Raft-aware 롤링 업그레이드 · health gate · observability · TLS | A | **완료** |
 | **E** | 오토스케일링 통합 | (`/scale` subresource) | 스케일 트리거 → Phase B의 rebalance 머신에 연결 | B | **완료** — `QdrantCluster`를 KEDA·HPA가 직접 스케일한다. 전용 CRD는 불필요했다 |
 
 의존 그래프: `A → {B, C, D}`는 병렬 진행 가능하고, `E`는 `B` 완료가 필요하다. Phase B가 이 프로젝트의 핵심 가치(shard 재배치 자동화)다.

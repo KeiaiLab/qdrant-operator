@@ -171,6 +171,32 @@ spec:
 
 CR が削除されると時系列も破棄します — 残すと削除済みクラスターの最終値が固定され、永遠にアラートを鳴らします。
 
+## TLS
+
+`config.tlsEnabled` はクライアント API と peer 間 Raft 通信の TLS を **同時に** 有効にします — Qdrant がその 2 つを 1 つのスイッチとして扱うためで、本オペレーターもそれに従います。これまで欠けていたのは証明書です。フラグだけ有効で `tls` セクションが無いと、Qdrant は起動できません。
+
+オペレーターは証明書を発行しません。Secret を指定すれば残りを配線します。
+
+```yaml
+spec:
+  config:
+    tlsEnabled: true
+    tls:
+      secretName: qdrant-tls   # cert-manager の Certificate Secret がそのまま使えます
+      # certKey / keyKey / caCertKey の既定値は tls.crt / tls.key / ca.crt
+      certTTLSeconds: 3600     # Qdrant がディスクから証明書を読み直す間隔
+```
+
+cert-manager の `Certificate` が作る Secret がまさにこの形なので変換は不要で、同じキーで手作りした Secret でも構いません。独自 CA を持つ案は検討のうえ却下しました — cert-manager の再実装であり、ローテーションと信頼の配布こそがそうした実装の壊れる場所だからです。
+
+有効にすると 3 つが伴います。
+
+- readiness プローブが HTTPS に切り替わります。HTTP のままでは決して成功せず、pod は Ready になりません。
+- オペレーター自身も HTTPS で接続し、同じ Secret の CA でサーバーを検証します。検証を省く選択肢は用意していません — 内部通信であっても一度省けるようにすると、それが既定になります。この接続を失えば、再配置・バックアップ・アップグレードゲートが一度に目を失います。
+- `certTTLSeconds` により更新された証明書を再起動なしで取り込めますが **HTTPS 限定** です。peer 間証明書の入れ替えには依然として pod の再起動が必要で、その再起動は上記のヘルスゲートを通ります。
+
+Secret なしで `tlsEnabled` だけを有効にした場合、オペレーターは StatefulSet に触れず `Degraded(TLSSecretMissing)` を報告します。クラッシュループする設定は適用しません。
+
 ## 正直な制限事項(必ずお読みください)
 
 本オペレーターは「新機能」よりも「破壊的なミスを構造的に防ぐこと」を重視します。
@@ -248,7 +274,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | オペレーター基盤 + プロビジョニング | `QdrantCluster` | scaffold・controller・RBAC + 宣言的な分散クラスター起動 | — | **完了** |
 | **B** | コレクション / shard オーケストレーション | `QdrantCollection` | 宣言的コレクション + auto-rebalance(観測 → 計画 → `move_shard`)+ 複製係数の修復 + alias re-shard + 安全な scale-in drain | A | **完了** |
 | **C** | データ保護 | `QdrantBackup` / `QdrantRestore` | 全 peer の snapshot API スケジュールバックアップ・S3 オブジェクトストレージ・保持期間・リストア | A | **完了** |
-| **D** | Day-2 / アップグレード | (status / metrics) | Raft-aware なローリングアップグレード・health gate・observability・TLS | A | **TLS のみ残り** |
+| **D** | Day-2 / アップグレード | (status / metrics) | Raft-aware なローリングアップグレード・health gate・observability・TLS | A | **完了** |
 | **E** | オートスケーリング統合 | (`/scale` subresource) | スケールトリガー → Phase B の rebalance 機構に接続 | B | **完了** — `QdrantCluster` を KEDA や HPA が直接スケールします。専用 CRD は不要でした |
 
 依存グラフ: `A → {B, C, D}` は並行して進めることができ、`E` は `B` の完了を必要とします。Phase B(shard 再配置の自動化)が本プロジェクトの中核的価値です。

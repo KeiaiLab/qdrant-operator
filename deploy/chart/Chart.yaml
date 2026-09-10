@@ -13,10 +13,16 @@ annotations:
   artifacthub.io/license: MIT
   artifacthub.io/operator: "true"
   artifacthub.io/changes: |
-    - kind: fixed
-      description: "Dead replicas no longer stall the rebalancer: replication-factor repair now runs while a replica is Dead, and the dead copy is reclaimed once healthy replicas meet the factor."
-    - kind: fixed
-      description: "Replication no longer targets a peer that already holds a dead copy of the same shard."
+    - kind: added
+      description: "QdrantBackup: scheduled snapshot backups fanned out across every peer, with cron scheduling and retention."
+    - kind: added
+      description: "QdrantRestore: restore a collection from a backup generation, one recovery per peer."
+    - kind: added
+      description: "spec.snapshots points snapshot storage at S3-compatible object storage; Qdrant writes there itself."
+    - kind: added
+      description: "Raft-aware rolling upgrades: the rollout advances only once the restarted peer rejoins consensus and every shard is Active."
+    - kind: added
+      description: "Prometheus metrics and alert rules for backups, dead replicas, rebalance convergence and gated rollouts."
 keywords:
   - qdrant
   - operator

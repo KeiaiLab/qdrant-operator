@@ -465,3 +465,65 @@ func TestStatefulSet_스냅샷S3Env(t *testing.T) {
 		}
 	}
 }
+
+func TestStatefulSet_TLS마운트와프로브(t *testing.T) {
+	qc := snapshotFixture()
+	qc.Spec.Config.TLSEnabled = true
+	qc.Spec.Config.TLS = &qdrantv1alpha1.TLSSpec{SecretName: "qdrant-tls"}
+	sts := BuildStatefulSet(qc)
+	c := sts.Spec.Template.Spec.Containers[0]
+
+	// 인증서는 Secret 에서 오고, 컨테이너 안 파일명은 qdrant 가 기대하는 이름으로 바뀐다.
+	var vol *corev1.Volume
+	for i := range sts.Spec.Template.Spec.Volumes {
+		if sts.Spec.Template.Spec.Volumes[i].Name == TLSVolumeName {
+			vol = &sts.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if vol == nil || vol.Secret == nil {
+		t.Fatalf("TLS 볼륨 누락: %+v", sts.Spec.Template.Spec.Volumes)
+	}
+	if vol.Secret.SecretName != "qdrant-tls" {
+		t.Fatalf("Secret 이름: %s", vol.Secret.SecretName)
+	}
+	want := map[string]string{"tls.crt": TLSCertFile, "tls.key": TLSKeyFile, "ca.crt": TLSCACertFile}
+	got := map[string]string{}
+	for _, it := range vol.Secret.Items {
+		got[it.Key] = it.Path
+	}
+	if len(got) != len(want) {
+		t.Fatalf("키 매핑 수 불일치: %+v", got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s → %s (want %s)", k, got[k], v)
+		}
+	}
+
+	var mounted bool
+	for _, m := range c.VolumeMounts {
+		if m.Name == TLSVolumeName && m.MountPath == TLSMountDir {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("TLS 마운트 누락: %+v", c.VolumeMounts)
+	}
+
+	// service.enable_tls 가 켜지면 /readyz 는 HTTPS 다. 프로브가 HTTP 로 남으면
+	// 파드가 영원히 Ready 가 되지 않는다.
+	if c.ReadinessProbe.HTTPGet.Scheme != corev1.URISchemeHTTPS {
+		t.Fatalf("프로브 scheme=%s (want HTTPS)", c.ReadinessProbe.HTTPGet.Scheme)
+	}
+
+	// 미설정이면 아무것도 늘지 않는다(golden parity).
+	plain := statefulSetFixture()
+	for _, v := range plain.Spec.Template.Spec.Volumes {
+		if v.Name == TLSVolumeName {
+			t.Fatal("TLS 미설정인데 볼륨이 생겼다")
+		}
+	}
+	if plain.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Scheme == corev1.URISchemeHTTPS {
+		t.Fatal("TLS 미설정인데 프로브가 HTTPS")
+	}
+}

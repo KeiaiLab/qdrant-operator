@@ -24,7 +24,6 @@ import (
 	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
-	"github.com/keiailab/qdrant-operator/internal/resources"
 )
 
 // QdrantBackupReconciler 는 스냅샷 백업 세대를 수렴시킨다.
@@ -32,6 +31,10 @@ import (
 // 백업은 만들기보다 **지우지 않기**가 어렵다. 이 컨트롤러가 파괴적으로 행동하는 유일한
 // 자리는 retention 이고, 그것은 명시 선언에서만 켜진다.
 type QdrantBackupReconciler struct {
+	// APIReader 는 캐시를 거치지 않는 읽기다. TLS CA 를 담은 Secret 을 읽는 데만 쓴다 —
+	// Secret 을 매니저 캐시에 올리면 범위 안 모든 Secret 을 들고 있게 되고, 이 컨트롤러의
+	// 메모리 상한은 128Mi 다.
+	APIReader client.Reader
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -315,19 +318,20 @@ func (r *QdrantBackupReconciler) commit(ctx context.Context, bk *qdrantv1alpha1.
 }
 
 func (r *QdrantBackupReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	if r.QdrantClientFor == nil {
 		// 컬렉션 목록 조회용 — 클러스터 client Service DNS.
 		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
-			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s.%s.svc:%d",
-				resources.ClientName(cluster), cluster.Namespace, resources.RESTPort))
+			return newClusterClient(context.Background(), r.APIReader, cluster, clientBaseURL(cluster))
 		}
 	}
 	if r.QdrantClientForPeer == nil {
 		// 스냅샷은 노드 단위라 발행·관측·삭제 전부 peer 직결(headless 파드 DNS)이어야 한다.
 		// client Service 로 보내면 어느 peer 가 받을지 알 수 없어 세대가 뒤섞인다.
 		r.QdrantClientForPeer = func(cluster *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client {
-			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s-%d.%s.%s.svc:%d",
-				cluster.Name, ordinal, resources.HeadlessName(cluster), cluster.Namespace, resources.RESTPort))
+			return newClusterClient(context.Background(), r.APIReader, cluster, peerBaseURL(cluster, ordinal))
 		}
 	}
 	r.Recorder = mgr.GetEventRecorder("qdrantbackup")

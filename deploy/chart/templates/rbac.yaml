@@ -66,6 +66,12 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
   - qdrant.keiailab.com
   resources:
   - qdrantclusters

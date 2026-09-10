@@ -11,6 +11,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 
+	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
 )
 
@@ -101,5 +102,39 @@ func TestUpgradeReady_Dead는막지않는다(t *testing.T) {
 	setState(o, 0, 1, qdrant.ShardStateDead)
 	if !upgradeReady(rolloutSTS(1, 3, true), 3, o) {
 		t.Fatal("Dead 가 업그레이드를 막았다")
+	}
+}
+
+func TestTLS_설정판정(t *testing.T) {
+	qc := &qdrantv1alpha1.QdrantCluster{}
+	qc.Namespace, qc.Name = "data", "q"
+
+	// 기본 — TLS 아님. 기존 클러스터가 여기에 해당한다.
+	if tlsEnabled(qc) || tlsMisconfigured(qc) {
+		t.Fatal("기본값이 TLS 로 판정됨")
+	}
+	if got := clientBaseURL(qc); got != "http://q.data.svc:6333" {
+		t.Fatalf("평문 주소: %s", got)
+	}
+
+	// 플래그만 켠 상태 = TLS 가 아니라 깨진 설정이다.
+	qc.Spec.Config.TLSEnabled = true
+	if tlsEnabled(qc) {
+		t.Fatal("인증서 없이 TLS 로 판정됨")
+	}
+	if !tlsMisconfigured(qc) {
+		t.Fatal("깨진 설정을 잡지 못함")
+	}
+
+	// 인증서까지 갖춰야 비로소 https 다.
+	qc.Spec.Config.TLS = &qdrantv1alpha1.TLSSpec{SecretName: "certs"}
+	if !tlsEnabled(qc) || tlsMisconfigured(qc) {
+		t.Fatal("완전한 설정을 TLS 로 인정하지 않음")
+	}
+	if got := clientBaseURL(qc); got != "https://q.data.svc:6333" {
+		t.Fatalf("client 주소: %s", got)
+	}
+	if got := peerBaseURL(qc, 2); got != "https://q-2.q-headless.data.svc:6333" {
+		t.Fatalf("peer 주소: %s", got)
 	}
 }

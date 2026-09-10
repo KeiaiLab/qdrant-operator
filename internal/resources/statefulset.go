@@ -28,8 +28,15 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 		res = defaultResources()
 	}
 
+	// service.enable_tls 가 켜지면 /readyz 는 HTTPS 다. 프로브가 HTTP 로 남으면 파드가
+	// 영원히 Ready 가 되지 않는다 — TLS 를 켰을 때만 나타나는 조용한 정지다.
+	// 미설정이면 Scheme 은 빈 값(=HTTP)이라 golden 산출물이 바뀌지 않는다.
+	var scheme corev1.URIScheme
+	if qc.Spec.Config.TLSEnabled {
+		scheme = corev1.URISchemeHTTPS
+	}
 	probe := &corev1.Probe{
-		ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(RESTPort)}},
+		ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(RESTPort), Scheme: scheme}},
 		InitialDelaySeconds: 5, PeriodSeconds: 5, FailureThreshold: 6,
 		SuccessThreshold: 1, TimeoutSeconds: 1,
 	}
@@ -114,15 +121,15 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 							SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 						},
 						// readOnlyRootFilesystem=true 라 쓰기 경로는 emptyDir 마운트로 뺀다(snapshots/init).
-						VolumeMounts: []corev1.VolumeMount{
+						VolumeMounts: append([]corev1.VolumeMount{
 							{Name: StorageVolumeName, MountPath: StorageMountDir},
 							{Name: ConfigVolumeName, MountPath: ConfigMountDir + "/" + InitScriptFile, SubPath: InitScriptFile},
 							{Name: ConfigVolumeName, MountPath: ConfigMountDir + "/" + ProdConfigFile, SubPath: ProdConfigFile},
 							{Name: SnapshotsVolumeName, MountPath: SnapshotsMountDir},
 							{Name: InitVolumeName, MountPath: InitMountDir},
-						},
+						}, tlsMount(qc)...),
 					}},
-					Volumes: []corev1.Volume{
+					Volumes: append([]corev1.Volume{
 						{
 							Name: ConfigVolumeName,
 							VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -132,7 +139,7 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 						},
 						{Name: SnapshotsVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{Name: InitVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-					},
+					}, tlsVolume(qc)...),
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
@@ -145,6 +152,53 @@ func BuildStatefulSet(qc *qdrantv1alpha1.QdrantCluster) *appsv1.StatefulSet {
 			}},
 		},
 	}
+}
+
+// tlsVolume 은 인증서 Secret 을 볼륨으로 만든다. Secret 의 키 이름(cert-manager 기본값)을
+// qdrant 설정이 기대하는 파일명으로 **바꿔서** 마운트한다 — 그래야 발급 도구의 관례와
+// qdrant 의 관례를 둘 다 건드리지 않는다.
+//
+// 미설정이면 nil 이라 STS 산출물이 늘지 않는다(golden parity).
+func tlsVolume(qc *qdrantv1alpha1.QdrantCluster) []corev1.Volume {
+	tls := qc.Spec.Config.TLS
+	if !qc.Spec.Config.TLSEnabled || tls == nil {
+		return nil
+	}
+
+	certKey, keyKey, caKey := tlsSecretKeys(tls)
+	return []corev1.Volume{{
+		Name: TLSVolumeName,
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: tls.SecretName,
+			Items: []corev1.KeyToPath{
+				{Key: certKey, Path: TLSCertFile},
+				{Key: keyKey, Path: TLSKeyFile},
+				{Key: caKey, Path: TLSCACertFile},
+			},
+		}},
+	}}
+}
+
+func tlsMount(qc *qdrantv1alpha1.QdrantCluster) []corev1.VolumeMount {
+	if !qc.Spec.Config.TLSEnabled || qc.Spec.Config.TLS == nil {
+		return nil
+	}
+	return []corev1.VolumeMount{{Name: TLSVolumeName, MountPath: TLSMountDir, ReadOnly: true}}
+}
+
+// tlsSecretKeys 는 미지정 키를 CRD default 와 같은 값으로 방어한다.
+func tlsSecretKeys(tls *qdrantv1alpha1.TLSSpec) (cert, key, ca string) {
+	cert, key, ca = tls.CertKey, tls.KeyKey, tls.CACertKey
+	if cert == "" {
+		cert = DefaultTLSCertKey
+	}
+	if key == "" {
+		key = DefaultTLSKeyKey
+	}
+	if ca == "" {
+		ca = DefaultTLSCACertKey
+	}
+	return cert, key, ca
 }
 
 // apiKeyEnv 는 설정된 인증 키를 qdrant 이중언더스코어 env override 로 만든다. Secret 값은

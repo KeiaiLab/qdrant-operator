@@ -169,6 +169,32 @@ The controller exposes Prometheus metrics on the standard controller-runtime end
 
 Series are removed when their CR is deleted — otherwise a deleted cluster's last value stays pinned and alerts forever.
 
+## TLS
+
+`config.tlsEnabled` turns on TLS for both the client API and inter-peer Raft traffic — Qdrant treats those as one switch, and so does this operator. What was missing until now were the certificates: with the flag on and no `tls` section, Qdrant refuses to start.
+
+The operator does not issue certificates. Point it at a Secret and it wires the rest:
+
+```yaml
+spec:
+  config:
+    tlsEnabled: true
+    tls:
+      secretName: qdrant-tls   # cert-manager's Certificate secret works unmodified
+      # certKey / keyKey / caCertKey default to tls.crt / tls.key / ca.crt
+      certTTLSeconds: 3600     # Qdrant re-reads the cert from disk at this interval
+```
+
+A cert-manager `Certificate` produces exactly this shape, so nothing needs translating; a hand-made Secret with the same keys works too. Running our own CA was considered and rejected — it reimplements cert-manager, and rotation and trust distribution are precisely where such implementations fail.
+
+Three things follow from turning it on:
+
+- The readiness probe switches to HTTPS. Left on HTTP it would never succeed, and the pods would never become ready.
+- The operator connects over HTTPS and verifies the server against the CA from the same Secret. There is no option to skip verification: once skipping exists for internal traffic, it becomes the default. Losing this connection would blind the rebalancer, the backup controller and the upgrade gate at once.
+- `certTTLSeconds` lets Qdrant pick up a renewed certificate without a restart, but **only for HTTPS** — the peer-to-peer certificate still needs the pod to restart. That restart goes through the health-gated rolling upgrade above.
+
+If `tlsEnabled` is set without a Secret, the operator leaves the StatefulSet alone and reports `Degraded(TLSSecretMissing)` rather than applying a configuration that crash-loops.
+
 ## Honest limitations (please read)
 
 The operator weighs "structurally preventing destructive mistakes" over "new features".
@@ -246,7 +272,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | Operator foundation + provisioning | `QdrantCluster` | scaffold · controller · RBAC + declarative distributed cluster bring-up | — | **Done** |
 | **B** | Collection / shard orchestration | `QdrantCollection` | declarative collections + auto-rebalance (observe → plan → `move_shard`) + replication-factor repair + alias re-shard + safe scale-in drain | A | **Done** |
 | **C** | Data protection | `QdrantBackup` / `QdrantRestore` | scheduled snapshot-API backups across every peer · S3 object storage · retention · restore | A | **Done** |
-| **D** | Day-2 / upgrades | (status / metrics) | Raft-aware rolling upgrades · health gate · observability · TLS | A | **Done except TLS** |
+| **D** | Day-2 / upgrades | (status / metrics) | Raft-aware rolling upgrades · health gate · observability · TLS | A | **Done** |
 | **E** | Autoscaling integration | (`/scale` subresource) | scale triggers → wired into the Phase B rebalance machine | B | **Done** — `QdrantCluster` is directly scalable by KEDA or an HPA; no dedicated CRD was needed |
 
 Dependency graph: `A → {B, C, D}` can proceed in parallel; `E` requires `B`. Phase B is the core value of this project (automated shard rebalancing).

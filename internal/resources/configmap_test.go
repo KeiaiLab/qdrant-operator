@@ -66,3 +66,33 @@ func TestBuildConfigMap_스냅샷저장소(t *testing.T) {
 		t.Fatalf("s3 블록 없는 S3 는 무설정이어야 함:\n%s", got)
 	}
 }
+
+func TestBuildConfigMap_TLS섹션(t *testing.T) {
+	qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "q", Namespace: "data"}}
+	base := BuildConfigMap(qc).Data["production.yaml"]
+	if strings.Contains(base, "\ntls:") {
+		t.Fatalf("TLS 미설정인데 섹션이 샜다:\n%s", base)
+	}
+
+	qc.Spec.Config.TLSEnabled = true
+	qc.Spec.Config.TLS = &qdrantv1alpha1.TLSSpec{SecretName: "qdrant-tls", CertTTLSeconds: 900}
+	prod := BuildConfigMap(qc).Data["production.yaml"]
+
+	// qdrant 는 service/p2p TLS 가 켜지면 tls 섹션을 요구한다 — 없으면 기동 실패다.
+	for _, want := range []string{
+		"tls:", "cert: /qdrant/tls/cert.pem", "key: /qdrant/tls/key.pem",
+		"ca_cert: /qdrant/tls/cacert.pem", "cert_ttl: 900",
+	} {
+		if !strings.Contains(prod, want) {
+			t.Fatalf("%q 누락:\n%s", want, prod)
+		}
+	}
+	if !strings.Contains(prod, "enable_tls: true") {
+		t.Fatalf("enable_tls 가 켜지지 않음:\n%s", prod)
+	}
+
+	// Secret 이름은 설정 파일에 들어가지 않는다 — 마운트가 할 일이다.
+	if strings.Contains(prod, "qdrant-tls") {
+		t.Fatalf("Secret 이름이 설정에 샜다:\n%s", prod)
+	}
+}

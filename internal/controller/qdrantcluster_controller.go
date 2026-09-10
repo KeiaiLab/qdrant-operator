@@ -43,6 +43,10 @@ const (
 
 // QdrantClusterReconciler reconciles a QdrantCluster object
 type QdrantClusterReconciler struct {
+	// APIReader 는 캐시를 거치지 않는 읽기다. TLS CA 를 담은 Secret 을 읽는 데만 쓴다 —
+	// Secret 을 매니저 캐시에 올리면 범위 안 모든 Secret 을 들고 있게 되고, 이 컨트롤러의
+	// 메모리 상한은 128Mi 다.
+	APIReader client.Reader
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -62,6 +66,8 @@ type QdrantClusterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// TLS CA 를 읽기 위한 최소 권한 — 읽기만, 그리고 캐시를 거치지 않는 직행 읽기다(tls.go 참조).
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -136,6 +142,22 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if liveSTS.Spec.Replicas != nil && qc.Spec.Replicas < *liveSTS.Spec.Replicas {
 			return r.reconcileDrainCycle(ctx, qc, liveSTS)
 		}
+	}
+
+	// TLS 를 켰는데 인증서가 없으면 qdrant 는 기동하지 못한다(service/p2p TLS 는 tls 섹션을
+	// 요구한다). apply 하면 CrashLoop 이 되므로 STS 를 건드리지 않고 표면화한다 —
+	// immutable 가드와 같은 규율이다. 기존 클러스터는 tlsEnabled 기본값이 false 라 무영향.
+	if tlsMisconfigured(qc) {
+		_ = r.observe(ctx, qc) // 관측-우선: 대기 중에도 분포 보고는 멈추지 않는다
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{
+			Type: condDegraded, Status: metav1.ConditionTrue, Reason: "TLSSecretMissing",
+			Message:            "config.tlsEnabled 가 켜졌으나 config.tls.secretName 이 없음 — 인증서 없이는 qdrant 가 기동하지 못한다",
+			ObservedGeneration: qc.Generation,
+		})
+		commonsevents.EmitWarningf(r.Recorder, qc, "TLSSecretMissing",
+			"TLS 를 켜려면 인증서 Secret(config.tls.secretName)이 필요합니다")
+		_ = r.Status().Update(ctx, qc)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// 인증 키가 켜졌는데 TLS 가 꺼져 있으면 키가 평문으로 전송된다 — 게이팅하지 않고 경고만(설계 결정).
@@ -424,18 +446,19 @@ func (r *QdrantClusterReconciler) collectSizes(ctx context.Context, qc *qdrantv1
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	if r.QdrantClientFor == nil {
 		// 프로덕션 기본: 클러스터 client Service DNS (오퍼레이터가 클러스터 안에서 동작 전제).
 		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
-			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s.%s.svc:%d",
-				resources.ClientName(cluster), cluster.Namespace, resources.RESTPort))
+			return newClusterClient(context.Background(), r.APIReader, cluster, clientBaseURL(cluster))
 		}
 	}
 	if r.QdrantClientForPeer == nil {
 		// peer 직결: headless 파드 DNS — shard 크기 관측 전용(v0.4.0 설계 §①).
 		r.QdrantClientForPeer = func(cluster *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client {
-			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s-%d.%s.%s.svc:%d",
-				cluster.Name, ordinal, resources.HeadlessName(cluster), cluster.Namespace, resources.RESTPort))
+			return newClusterClient(context.Background(), r.APIReader, cluster, peerBaseURL(cluster, ordinal))
 		}
 	}
 	// 이벤트 API 마이그레이션 완료 — 신규 events API(k8s.io/client-go/tools/events)를 사용한다.

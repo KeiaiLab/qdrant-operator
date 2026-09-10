@@ -24,7 +24,6 @@ import (
 	commonsevents "github.com/keiailab/keiailab-commons/pkg/events"
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
-	"github.com/keiailab/qdrant-operator/internal/resources"
 )
 
 // collectionFinalizer 는 onDelete=Delete 인 CR 에만 부착 — Retain(기본)은 파이널라이저
@@ -33,6 +32,10 @@ const collectionFinalizer = "qdrant.keiailab.com/collection-cleanup"
 
 // QdrantCollectionReconciler reconciles a QdrantCollection object
 type QdrantCollectionReconciler struct {
+	// APIReader 는 캐시를 거치지 않는 읽기다. TLS CA 를 담은 Secret 을 읽는 데만 쓴다 —
+	// Secret 을 매니저 캐시에 올리면 범위 안 모든 Secret 을 들고 있게 되고, 이 컨트롤러의
+	// 메모리 상한은 128Mi 다.
+	APIReader client.Reader
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -208,12 +211,14 @@ func (r *QdrantCollectionReconciler) setDegraded(ctx context.Context, col *qdran
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *QdrantCollectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	r.Recorder = mgr.GetEventRecorder("qdrantcollection")
 	if r.QdrantClientFor == nil {
 		// 프로덕션 기본: 클러스터 client Service DNS (오퍼레이터가 클러스터 안에서 동작 전제).
 		r.QdrantClientFor = func(cluster *qdrantv1alpha1.QdrantCluster) qdrant.Client {
-			return qdrant.NewHTTPClient(fmt.Sprintf("http://%s.%s.svc:%d",
-				resources.ClientName(cluster), cluster.Namespace, resources.RESTPort))
+			return newClusterClient(context.Background(), r.APIReader, cluster, clientBaseURL(cluster))
 		}
 	}
 	return ctrl.NewControllerManagedBy(mgr).

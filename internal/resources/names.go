@@ -34,6 +34,23 @@ const (
 const DefaultAPIKeySecretKey = "api-key"
 
 // S3 자격 Secret 의 기본 데이터 키 — ObjectBucketClaim 이 만드는 Secret 의 키 이름과 같다.
+// TLS Secret 의 기본 데이터 키 — cert-manager 가 만드는 Secret 의 키 이름과 같다.
+// 컨테이너 안 파일명은 qdrant 설정이 기대하는 이름으로 바꿔 마운트한다.
+const (
+	DefaultTLSCertKey   = "tls.crt"
+	DefaultTLSKeyKey    = "tls.key"
+	DefaultTLSCACertKey = "ca.crt"
+
+	TLSCertFile   = "cert.pem"
+	TLSKeyFile    = "key.pem"
+	TLSCACertFile = "cacert.pem"
+
+	TLSVolumeName = "tls"
+
+	// DefaultCertTTLSeconds — CRD default 와 같은 값. 미지정 CR 방어용.
+	DefaultCertTTLSeconds = 3600
+)
+
 const (
 	DefaultS3AccessKeyKey = "AWS_ACCESS_KEY_ID"
 	DefaultS3SecretKeyKey = "AWS_SECRET_ACCESS_KEY"
@@ -46,6 +63,7 @@ const (
 	StorageMountDir   = "/qdrant/storage"
 	SnapshotsMountDir = "/qdrant/snapshots"
 	InitMountDir      = "/qdrant/init"
+	TLSMountDir       = "/qdrant/tls"
 )
 
 // RunAsGroup 은 helm 차트 고정값(2000) — QdrantClusterSpec 에 대응 CR 필드가 없어(RunAsUser/FSGroup
