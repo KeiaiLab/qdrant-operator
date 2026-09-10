@@ -426,6 +426,58 @@ var _ = Describe("QdrantCluster RF 재복제 (v0.4.0)", func() {
 	})
 })
 
+var _ = Describe("QdrantCluster Dead replica 수리 (v0.9.0)", func() {
+	makeReady := func(name string, replicas int32) {
+		sts := &appsv1.StatefulSet{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, sts)
+		}, "10s", "250ms").Should(Succeed())
+		sts.Status.Replicas = replicas
+		sts.Status.ReadyReplicas = replicas
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+	}
+
+	It("Dead 사본을 재복제로 메우고 잔해를 회수해 리밸런스 차단을 푼다", func() {
+		// peer ID 스펙별 고유 대역 의무(rf1 주석 참조).
+		fakeQdrant.SetPeers(
+			qdrant.Peer{ID: 71, URI: "http://dead1-0.dead1-headless:6335/"},
+			qdrant.Peer{ID: 72, URI: "http://dead1-1.dead1-headless:6335/"},
+			qdrant.Peer{ID: 73, URI: "http://dead1-2.dead1-headless:6335/"},
+		)
+		fakeQdrant.SetCollection("deadvec", qdrant.CollectionInfo{
+			Exists: true, VectorSize: 4, Distance: "Cosine", ShardNumber: 1, ReplicationFactor: 2,
+		})
+		// RF2 로 71·72 에 얹혀 있던 shard 0 에서 peer 72 가 영구 이탈했다.
+		fakeQdrant.SetPlacement("deadvec", map[uint32]uint64{0: 71})
+		fakeQdrant.AddReplica("deadvec", 0, 72)
+		fakeQdrant.MarkDead("deadvec", 0, 72)
+
+		qc := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "dead1", Namespace: "default"}}
+		qc.Spec.Replicas = 3
+		Expect(k8sClient.Create(ctx, qc)).To(Succeed())
+		makeReady("dead1", 3)
+
+		// ① 재복제 — Dead 를 든 72 가 아니라 성한 73 으로 간다.
+		Eventually(func() []string {
+			return fakeQdrant.Replicated
+		}, "25s", "250ms").Should(ContainElement("deadvec/0:71->73"))
+
+		// ② 회수 — Active 2 = RF 2 를 충족한 뒤에야 죽은 사본이 지워진다.
+		Eventually(func() []string {
+			return fakeQdrant.Moves
+		}, "25s", "250ms").Should(ContainElement("deadvec/0:drop@72"))
+
+		// ③ 정착 — 잔해가 사라져 성능 단계가 다시 열리고 무행동으로 수렴한다.
+		fetched := &qdrantv1alpha1.QdrantCluster{}
+		Eventually(func() string {
+			_ = k8sClient.Get(ctx, types.NamespacedName{Name: "dead1", Namespace: "default"}, fetched)
+			return fetched.Status.Phase
+		}, "20s", "250ms").Should(Equal("Running"))
+		Expect(fetched.Status.ActiveMove).To(BeNil())
+		Expect(fetched.Status.PlannedMoves).To(BeEmpty())
+	})
+})
+
 var _ = Describe("QdrantCluster HA 자산 (v0.5.0)", func() {
 	It("replicas>=2 면 PDB 를 만들고, 1 로 줄이면 제거한다", func() {
 		key := types.NamespacedName{Name: "ha5", Namespace: "default"}

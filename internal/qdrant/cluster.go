@@ -212,6 +212,9 @@ func (c *HTTPClient) CollectionCluster(ctx context.Context, name string) (*Colle
 const (
 	keyShardID       = "shard_id"
 	ShardStateActive = "Active"
+	// ShardStateDead — replica 가 못 쓰게 된 종착 상태(전이 중이 아니다). 스스로 벗어나지
+	// 못하므로 오퍼레이터가 재복제·회수로 걷어내야 한다.
+	ShardStateDead = "Dead"
 )
 
 // MoveShard 는 shard 1개를 from→to 로 이동한다(비동기 — 완료는 CollectionCluster 의

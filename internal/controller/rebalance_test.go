@@ -212,3 +212,98 @@ func TestPlanSizeRebalance_크기2차기준(t *testing.T) {
 		t.Fatalf("개선 불가인데 이동 발행(진동 위험): %+v", p)
 	}
 }
+
+// setState 는 조립된 관측에서 특정 (shard, peer) 의 상태를 바꾼다(컬렉션 "c" 고정).
+func setState(o *observation, shardID uint32, peerID uint64, state string) {
+	for i := range o.Collections["c"].Shards {
+		s := &o.Collections["c"].Shards[i]
+		if s.ShardID == shardID && s.PeerID == peerID {
+			s.State = state
+			return
+		}
+	}
+}
+
+func TestObservation_Dead는전이상태가아니다(t *testing.T) {
+	// Dead 는 스스로 벗어나지 못하는 종착 상태다. 이것을 전이 중으로 분류하면 수리 루프가
+	// 영원히 잠긴다 — 게이트는 Dead 를 통과시키되 진짜 전이 상태는 계속 막아야 한다.
+	o := obs([]uint64{1, 2}, map[string]map[uint32][]uint64{"c": {0: {1, 2}}})
+	setState(o, 0, 2, qdrant.ShardStateDead)
+
+	if o.transitioning() {
+		t.Fatal("Dead 를 전이 중으로 오분류 — 수리 계획에 도달하지 못한다")
+	}
+	if !o.hasDead() {
+		t.Fatal("Dead 미검출")
+	}
+
+	setState(o, 0, 2, "Initializing")
+	if !o.transitioning() {
+		t.Fatal("진짜 전이 상태를 놓침")
+	}
+}
+
+func TestPlanReplications_Dead보유피어는target에서제외(t *testing.T) {
+	// shard0 의 Active 는 peer1 뿐이고 peer2 는 죽은 사본을 들고 있다. peer3 이 유일하게
+	// 성한 후보다 — 죽은 사본이 있는 peer 로 복제를 쏘면 실패한다.
+	o := obs([]uint64{1, 2, 3}, map[string]map[uint32][]uint64{"c": {0: {1, 2}}})
+	setState(o, 0, 2, qdrant.ShardStateDead)
+	o.RF = map[string]uint32{"c": 2}
+
+	plan := planReplications(o)
+	if len(plan) != 1 {
+		t.Fatalf("RF 미달(Active 1 < 2)인데 복제 계획 1건이 아님: %+v", plan)
+	}
+	if plan[0].To == 2 {
+		t.Fatalf("Dead 사본 보유 peer 2 를 target 으로 선택: %+v", plan[0])
+	}
+	if plan[0].From != 1 || plan[0].To != 3 || !plan[0].Replicate {
+		t.Fatalf("복제 후보: %+v", plan[0])
+	}
+}
+
+func TestPlanDeadDrops_RF충족후에만회수(t *testing.T) {
+	// Active 2 = RF 2 충족 + Dead 1 잔존 → 회수 대상.
+	o := obs([]uint64{1, 2, 3}, map[string]map[uint32][]uint64{"c": {0: {1, 2, 3}}})
+	setState(o, 0, 3, qdrant.ShardStateDead)
+	o.RF = map[string]uint32{"c": 2}
+
+	plan := planDeadDrops(o)
+	if len(plan) != 1 {
+		t.Fatalf("Dead 회수 1건이어야 함: %+v", plan)
+	}
+	if !plan[0].Drop || plan[0].From != 3 || plan[0].ShardID != 0 {
+		t.Fatalf("회수 후보: %+v", plan[0])
+	}
+	if got := plan[0].String(); got != "c/0: drop@3" {
+		t.Fatalf("표기: %s", got)
+	}
+
+	// Active 1 < RF 2 — 내구성 미달 상태에서 드롭은 금지(먼저 재복제해야 한다).
+	short := obs([]uint64{1, 2}, map[string]map[uint32][]uint64{"c": {0: {1, 2}}})
+	setState(short, 0, 2, qdrant.ShardStateDead)
+	short.RF = map[string]uint32{"c": 2}
+	if p := planDeadDrops(short); len(p) != 0 {
+		t.Fatalf("RF 미달인데 드롭 발행: %+v", p)
+	}
+
+	// Dead 없음 — 무행동.
+	clean := obs([]uint64{1, 2}, map[string]map[uint32][]uint64{"c": {0: {1, 2}}})
+	clean.RF = map[string]uint32{"c": 2}
+	if p := planDeadDrops(clean); len(p) != 0 {
+		t.Fatalf("Dead 가 없는데 드롭 발행: %+v", p)
+	}
+}
+
+func TestPlanRebalance_Dead잔존시성능단계보류(t *testing.T) {
+	// peer1 이 3 shard, peer2 가 0 — 평소라면 이동 후보다. 그러나 잔해가 남은 채로 센
+	// count 는 오판이라 회수가 끝날 때까지 성능 단계는 멈춘다.
+	o := obs([]uint64{1, 2}, map[string]map[uint32][]uint64{
+		"c": {0: {1}, 1: {1}, 2: {1}},
+	})
+	setState(o, 2, 1, qdrant.ShardStateDead)
+
+	if plan := planRebalance(o); len(plan) != 0 {
+		t.Fatalf("Dead 잔존 중 리밸런스 발행: %+v", plan)
+	}
+}

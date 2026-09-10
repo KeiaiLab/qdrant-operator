@@ -98,6 +98,52 @@ func (o *observation) allShardsActive() bool {
 	return true
 }
 
+// transitioning 은 "진짜 전이 중"인 shard 존재 여부다 — Active 도 Dead 도 아닌 상태
+// (Initializing/Partial/Recovery…). Dead 를 여기서 빼는 것이 이 함수의 존재 이유다:
+// Dead 는 스스로 벗어나지 못하는 종착 상태라, 전이 취급하면 그것을 고칠 재복제 루프가
+// 영원히 잠기고 count/size 리밸런스까지 함께 멈춘다.
+func (o *observation) transitioning() bool {
+	for _, cc := range o.Collections {
+		for _, s := range cc.Shards {
+			if s.State != shardStateActive && s.State != shardStateDead {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasDead 는 Dead replica 잔존 여부 — 성능 단계(count/size) 진입 차단 판정용.
+func (o *observation) hasDead() bool {
+	for _, cc := range o.Collections {
+		for _, s := range cc.Shards {
+			if s.State == shardStateDead {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// deadHolders 는 컬렉션의 shardID → Dead 보유 peer 집합.
+func (o *observation) deadHolders(coll string) map[uint32]map[uint64]bool {
+	out := map[uint32]map[uint64]bool{}
+	cc, ok := o.Collections[coll]
+	if !ok {
+		return out
+	}
+	for _, s := range cc.Shards {
+		if s.State != shardStateDead {
+			continue
+		}
+		if out[s.ShardID] == nil {
+			out[s.ShardID] = map[uint64]bool{}
+		}
+		out[s.ShardID][s.PeerID] = true
+	}
+	return out
+}
+
 // ── B-3 executor — 관측 게이트 → 완료/유실 판정 → 계획 선노출 → 동시 1건 발행 ──
 
 const (
@@ -119,6 +165,7 @@ const (
 	phaseRunning       = "Running"
 	phaseDraining      = "Draining"
 	shardStateActive   = "Active"
+	shardStateDead     = "Dead"
 	kindReplicate      = "Replicate"
 	// 크기 가중 2차 기준 발동 임계(하드코드 — 설계 §① YAGNI): 비율과 절대차 모두 충족해야 이동.
 	sizeImbalanceRatio = 2.0
@@ -261,14 +308,24 @@ func (r *QdrantClusterReconciler) reconcileRebalance(ctx context.Context, qc *qd
 		return phaseRebalancing, d
 	}
 
-	// 비-Active shard(전이 중) — 계획 보류.
-	if !obs.allShardsActive() {
+	// 진짜 전이 중인 shard — 계획 보류. Dead 는 전이가 아니라 종착이므로 통과시킨다
+	// (그것을 고치는 것이 아래 재복제·회수 단계다).
+	if obs.transitioning() {
 		return phaseRebalancing, 10 * time.Second
 	}
 
-	// 신선 재계획 + 선노출 — 재복제(내구성) > 리밸런스(성능) 우선순위(설계 §②).
+	// 신선 재계획 + 선노출. 우선순위(설계 §②를 Dead 회수로 확장):
+	//
+	//   재복제(내구성 회복) → Dead 회수(잔해 제거) → 리밸런스(성능)
+	//
+	// 순서가 곧 안전 불변식이다. 재복제가 먼저라 회수는 항상 RF 를 충족한 뒤에만 일어나고,
+	// 리밸런스가 마지막이라 잔해가 섞인 count 로 균형을 오판하지 않는다.
 	plan := planReplications(obs)
 	kind := kindReplicate
+	if len(plan) == 0 {
+		plan = planDeadDrops(obs)
+		kind = "DeadRepair"
+	}
 	if len(plan) == 0 {
 		plan = planRebalance(obs)
 		kind = "Rebalance"
@@ -331,6 +388,12 @@ func requeueOrNothing(d time.Duration) ctrl.Result {
 // 첫 항목 하나만 집행한다). 반환 계획이 비면 균형(또는 distinct-peer 제약 하 잔여).
 func planRebalance(obs *observation) []plannedMove {
 	if len(obs.Peers) < 2 {
+		return nil
+	}
+
+	// Dead 잔존 중에는 성능 단계에 들어가지 않는다 — 못 쓰는 사본을 세어 만든 count 균형은
+	// 오판이고, 회수가 끝나면 어차피 분포가 달라진다.
+	if obs.hasDead() {
 		return nil
 	}
 	var plan []plannedMove
@@ -519,7 +582,8 @@ func planReplications(obs *observation) []plannedMove {
 			continue
 		}
 		cc := obs.Collections[coll]
-		count := map[uint64]int{} // peer 별 이 컬렉션 shard 보유 수(target 선택 부하 기준)
+		dead := obs.deadHolders(coll) // 죽은 사본이 있는 peer 로 복제를 쏘면 실패한다
+		count := map[uint64]int{}     // peer 별 이 컬렉션 shard 보유 수(target 선택 부하 기준)
 		for _, p := range obs.Peers {
 			count[p.ID] = 0
 		}
@@ -548,7 +612,7 @@ func planReplications(obs *observation) []plannedMove {
 			var target uint64
 			found := false
 			for _, p := range obs.Peers {
-				if slices.Contains(hs, p.ID) {
+				if slices.Contains(hs, p.ID) || dead[sid][p.ID] {
 					continue
 				}
 				if !found || count[p.ID] < count[target] || (count[p.ID] == count[target] && p.ID < target) {
@@ -559,6 +623,65 @@ func planReplications(obs *observation) []plannedMove {
 				continue
 			}
 			plan = append(plan, plannedMove{Collection: coll, ShardID: sid, From: source, To: target, Replicate: true})
+		}
+	}
+	return plan
+}
+
+// planDeadDrops 는 Dead replica 회수 계획을 산출한다 — 재복제로 내구성이 회복된 **뒤에만**
+// 실행되는 마지막 단계다.
+//
+//	shard 0:  peer1(Active)  peer2(Active)  peer3(Dead)      RF=2
+//	          └─ Active 2 >= RF 2 → peer3 의 잔해를 회수한다
+//
+//	shard 1:  peer1(Active)  peer2(Dead)                     RF=2
+//	          └─ Active 1 < RF 2 → 손대지 않는다(planReplications 가 먼저 고친다)
+//
+// 왜 자동으로 지우나: Dead replica 는 서빙 불가 잔해이고 스스로 사라지지 않는다. 남겨두면
+// 사람이 치울 때까지 리밸런스 전체가 멈춘다 — 사람이 켜야 도는 관문을 만들지 않는다는
+// 원칙에 따라 회수까지가 오퍼레이터의 몫이다. RF 를 충족하는 Active replica 의 자동 드롭은
+// 여전히 금지다(설계 §② — 바뀌는 것은 Dead 뿐).
+func planDeadDrops(obs *observation) []plannedMove {
+	var plan []plannedMove
+
+	collNames := make([]string, 0, len(obs.Collections))
+	for name := range obs.Collections {
+		collNames = append(collNames, name)
+	}
+	slices.Sort(collNames)
+
+	for _, coll := range collNames {
+		cc := obs.Collections[coll]
+		rf := max(obs.RF[coll], 1)
+
+		active := map[uint32]int{}
+		dead := map[uint32][]uint64{}
+		for _, s := range cc.Shards {
+			switch s.State {
+			case shardStateActive:
+				active[s.ShardID]++
+			case shardStateDead:
+				dead[s.ShardID] = append(dead[s.ShardID], s.PeerID)
+			}
+		}
+
+		shardIDs := make([]uint32, 0, len(dead))
+		for sid := range dead {
+			shardIDs = append(shardIDs, sid)
+		}
+		slices.Sort(shardIDs)
+
+		// TODO: 회수 순서를 "Dead 가 가장 많이 쌓인 peer 우선"으로 바꾸면 교착 해제가
+		// 빨라진다. 지금은 결정론 테스트가 단순한 사전식 순서를 택했다.
+		for _, sid := range shardIDs {
+			if uint32(active[sid]) < rf {
+				continue // 내구성 미달 — 재복제가 먼저다
+			}
+			peers := dead[sid]
+			slices.Sort(peers)
+			for _, pid := range peers {
+				plan = append(plan, plannedMove{Collection: coll, ShardID: sid, From: pid, Drop: true})
+			}
 		}
 	}
 	return plan

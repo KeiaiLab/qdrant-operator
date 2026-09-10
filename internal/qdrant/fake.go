@@ -44,6 +44,10 @@ type Fake struct {
 	// ShardPoints: 컬렉션 → shardID → points (CollectionCluster 가 PointsCount 로 합성).
 	ShardPoints map[string]map[uint32]uint64
 	Replicated  []string // "coll/shard:from->to" (assert 용)
+
+	// DeadReplicas: 컬렉션 → shardID → Dead 로 보고할 peer 목록(peer 영구 이탈 모사).
+	// 여기 오른 peer 는 Active 대신 Dead 로 합성된다 — 같은 사본이 두 번 나오지 않는다.
+	DeadReplicas map[string]map[uint32][]uint64
 }
 
 func NewFake() *Fake {
@@ -59,6 +63,7 @@ func NewFake() *Fake {
 
 		ExtraReplicas: map[string]map[uint32][]uint64{},
 		ShardPoints:   map[string]map[uint32]uint64{},
+		DeadReplicas:  map[string]map[uint32][]uint64{},
 	}
 }
 
@@ -77,6 +82,16 @@ func (f *Fake) AddReplica(name string, shardID uint32, peerID uint64) {
 		f.ExtraReplicas[name] = map[uint32][]uint64{}
 	}
 	f.ExtraReplicas[name][shardID] = append(f.ExtraReplicas[name][shardID], peerID)
+}
+
+// MarkDead 는 shard 사본 하나를 Dead 로 만든다(노드 영구 이탈 모사).
+func (f *Fake) MarkDead(name string, shardID uint32, peerID uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.DeadReplicas[name] == nil {
+		f.DeadReplicas[name] = map[uint32][]uint64{}
+	}
+	f.DeadReplicas[name][shardID] = append(f.DeadReplicas[name][shardID], peerID)
 }
 
 // SetPoints 는 컬렉션에 n 개의 더미 point 를 채운다(리샤드 복사 시나리오용).
@@ -235,9 +250,16 @@ func (f *Fake) CollectionCluster(_ context.Context, name string) (*CollectionClu
 	}
 	slices.Sort(ids)
 	for _, sid := range ids {
-		cc.Shards = append(cc.Shards, ShardInfo{ShardID: sid, PeerID: pl[sid], State: ShardStateActive, PointsCount: f.ShardPoints[name][sid]})
+		dead := f.DeadReplicas[name][sid]
+		state := func(peerID uint64) string {
+			if slices.Contains(dead, peerID) {
+				return ShardStateDead
+			}
+			return ShardStateActive
+		}
+		cc.Shards = append(cc.Shards, ShardInfo{ShardID: sid, PeerID: pl[sid], State: state(pl[sid]), PointsCount: f.ShardPoints[name][sid]})
 		for _, rp := range f.ExtraReplicas[name][sid] { // RF>1 모사 — 추가 replica 합성
-			cc.Shards = append(cc.Shards, ShardInfo{ShardID: sid, PeerID: rp, State: ShardStateActive, PointsCount: f.ShardPoints[name][sid]})
+			cc.Shards = append(cc.Shards, ShardInfo{ShardID: sid, PeerID: rp, State: state(rp), PointsCount: f.ShardPoints[name][sid]})
 		}
 	}
 	cc.Transfers = append(cc.Transfers, f.InFlight[name]...)
@@ -287,11 +309,18 @@ func (f *Fake) DropReplica(_ context.Context, collection string, shardID uint32,
 	if !ok {
 		return fmt.Errorf("collection %s not found", collection)
 	}
-	// 단일 복제본 모델(Placement=shard→peer 1개)에선 잉여 드롭이 존재하지 않는다 — 실서버
-	// 시맨틱(마지막 active replica 거부)을 모사해 항상 거부한다. RF>1 시뮬은 후속 확장.
+	// Placement 는 shard 의 기준 사본이라 드롭 대상이 아니다 — 실서버의 "마지막 active
+	// replica 거부" 시맨틱을 모사한다.
 	if pl[shardID] == peerID {
 		return fmt.Errorf("shard %d 의 마지막 active replica(peer %d) — drop 거부", shardID, peerID)
 	}
+
+	// 잉여·죽은 사본은 실제로 걷어낸다 — 그래야 관측 기반 완료 판정이 성립한다.
+	f.DeadReplicas[collection][shardID] = slices.DeleteFunc(f.DeadReplicas[collection][shardID],
+		func(id uint64) bool { return id == peerID })
+	f.ExtraReplicas[collection][shardID] = slices.DeleteFunc(f.ExtraReplicas[collection][shardID],
+		func(id uint64) bool { return id == peerID })
+
 	f.Moves = append(f.Moves, fmt.Sprintf("%s/%d:drop@%d", collection, shardID, peerID))
 	return nil
 }
