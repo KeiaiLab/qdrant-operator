@@ -31,7 +31,12 @@ jobs:
       - name: Install govulncheck
         # Pinned to a specific minor for Scorecard `Pinned-Dependencies`.
         # Bump deliberately as new govulncheck DB releases land.
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        #
+        # v1.1.4 predates Go 1.26 and reported "No vulnerabilities found" on a
+        # tree where v1.8.0 found four advisories (cel-go, otel, x/mod x2) - a
+        # scanner that cannot see the findings is not a gate. This job has also
+        # been red on every run since 2026-08-25.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       - name: Run govulncheck
         run: govulncheck ./...
 
