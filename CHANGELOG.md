@@ -33,6 +33,28 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ### Added
 
+- `QdrantBackup` — declarative snapshot backups. Snapshots in Qdrant are
+  node-local: a request captures only the shards on the peer that answered
+  it, so one backup generation is (collections × peers) and the controller
+  fans out accordingly. Creation is issued with `wait=false` and completion
+  is decided by observing the snapshot list, because a large collection takes
+  far longer than any sane HTTP timeout. One snapshot is in flight at a time —
+  the rule the shard mover follows, for the same reason. Supports a cron
+  `schedule` (one-shot when omitted), `suspend`, and `retention.keepLast`.
+  Retention is the only destructive path and stays off unless declared. An
+  unparseable cron surfaces as `Degraded` rather than a backup that silently
+  never runs.
+- `spec.snapshots` on `QdrantCluster` points snapshot storage at S3-compatible
+  object storage. Qdrant writes there itself — the operator never handles the
+  bytes, which matters for a controller capped at 128Mi. Bucket and region go
+  into the ConfigMap; the credentials go in as env via `secretKeyRef` only.
+  Unset or `Local` renders byte-identical output to before.
+- `make chart-crds` / `make chart-crds-check`. The chart's CRD bundle was a
+  hand-maintained concatenation of the generated CRDs and had already fallen
+  behind when this was noticed — a chart install would have rejected the new
+  field while the operator itself accepted it, which shows up as the user's
+  CRs being refused for no visible reason. Generated now, and gated in CI and
+  at release.
 - A `report-failure` job that opens or refreshes a single tracking issue when
   the scheduled security scan fails. The previous failure went unnoticed for
   two weeks because a red cron notifies nobody, and a gate people learn to
