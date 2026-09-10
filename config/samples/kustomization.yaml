@@ -3,4 +3,5 @@ resources:
 - qdrant_v1alpha1_qdrantcluster.yaml
 - qdrant_v1alpha1_qdrantcollection.yaml
 - qdrant_v1alpha1_qdrantbackup.yaml
+- qdrant_v1alpha1_qdrantrestore.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

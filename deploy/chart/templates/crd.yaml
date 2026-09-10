@@ -1916,3 +1916,216 @@ spec:
     storage: true
     subresources:
       status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: qdrantrestores.qdrant.keiailab.com
+spec:
+  group: qdrant.keiailab.com
+  names:
+    kind: QdrantRestore
+    listKind: QdrantRestoreList
+    plural: qdrantrestores
+    singular: qdrantrestore
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterRef
+      name: Cluster
+      type: string
+    - jsonPath: .spec.collection
+      name: Collection
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.completionTime
+      name: Completed
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: QdrantRestore is the Schema for the qdrantrestores API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of QdrantRestore
+            properties:
+              clusterRef:
+                description: ClusterRef 는 같은 네임스페이스의 QdrantCluster 이름이다.
+                type: string
+              collection:
+                description: Collection 은 복원 대상 컬렉션이다. 없으면 복원이 만들어 준다.
+                type: string
+              fromBackup:
+                description: |-
+                  FromBackup 은 QdrantBackup 이름이다. 그 CR 의 status.snapshots 가 좌표가 된다 —
+                  세대를 통째로 되돌리는 정상 경로다.
+
+                  스냅샷이 S3 에 있으면 이 경로를 쓸 수 없다. peer 가 자기 스냅샷을 HTTP 로 서빙하지
+                  않고 qdrant 는 s3:// 위치를 받지 않기 때문이다 — 그때는 Sources 로 주소를 준다.
+                type: string
+              priority:
+                default: snapshot
+                description: Priority 는 충돌 해소 방식이다.
+                enum:
+                - replica
+                - snapshot
+                - no_sync
+                type: string
+              sources:
+                description: Sources 는 peer 별 스냅샷 위치를 직접 주는 경로다. FromBackup 과 함께 쓰면
+                  이쪽이 이긴다.
+                items:
+                  description: RestoreSource 는 한 peer 가 읽을 스냅샷 위치다.
+                  properties:
+                    location:
+                      description: Location 은 **그 peer 가 직접 닿을 수 있는** URL 또는 로컬 파일
+                        경로다.
+                      type: string
+                    peer:
+                      description: Peer 는 복원을 실행할 STS 서수다.
+                      format: int32
+                      type: integer
+                  required:
+                  - location
+                  - peer
+                  type: object
+                type: array
+            required:
+            - clusterRef
+            - collection
+            type: object
+          status:
+            description: status defines the observed state of QdrantRestore
+            properties:
+              completionTime:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+              pending:
+                description: Pending 은 남은 peer 복원이다 — 여기 있어서 재기동해도 이어진다.
+                items:
+                  description: RestoreSource 는 한 peer 가 읽을 스냅샷 위치다.
+                  properties:
+                    location:
+                      description: Location 은 **그 peer 가 직접 닿을 수 있는** URL 또는 로컬 파일
+                        경로다.
+                      type: string
+                    peer:
+                      description: Peer 는 복원을 실행할 STS 서수다.
+                      format: int32
+                      type: integer
+                  required:
+                  - location
+                  - peer
+                  type: object
+                type: array
+              phase:
+                type: string
+              restored:
+                description: Restored 는 발행을 마친 peer 복원이다.
+                items:
+                  description: RestoreSource 는 한 peer 가 읽을 스냅샷 위치다.
+                  properties:
+                    location:
+                      description: Location 은 **그 peer 가 직접 닿을 수 있는** URL 또는 로컬 파일
+                        경로다.
+                      type: string
+                    peer:
+                      description: Peer 는 복원을 실행할 STS 서수다.
+                      format: int32
+                      type: integer
+                  required:
+                  - location
+                  - peer
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -44,6 +44,13 @@ fix looks the way it does. A one-line subject is not a changelog.
   Retention is the only destructive path and stays off unless declared. An
   unparseable cron surfaces as `Degraded` rather than a backup that silently
   never runs.
+- `QdrantRestore` — one-shot restore of a collection from a backup generation.
+  Restore is per-node too, so the CR fans out one recovery per peer, each
+  reading its own snapshot. Nothing is deleted to make room: Qdrant's guidance
+  is to drop and recreate the collection first, but that deletion is
+  irreversible, and `priority: snapshot` (the default here) reaches the same
+  end state without it. A completed restore never runs again — re-running one
+  would silently roll back everything written since.
 - `spec.snapshots` on `QdrantCluster` points snapshot storage at S3-compatible
   object storage. Qdrant writes there itself — the operator never handles the
   bytes, which matters for a controller capped at 128Mi. Bucket and region go

@@ -42,6 +42,8 @@ self-hosted Qdrant를 Kubernetes에서 운영하려면 StatefulSet · Service ·
 |---|---|---|
 | `QdrantCluster` | 구현됨 | 단일 인스턴스 또는 분산(Raft) Qdrant 클러스터 — shard 재배치와 안전한 scale-in 포함 |
 | `QdrantCollection` | 구현됨 | 선언적 컬렉션 — 생성 · 채택 · alias 기반 re-shard |
+| `QdrantBackup` | 구현됨 | 전 peer 스냅샷 스케줄 백업 · 보존기간 |
+| `QdrantRestore` | 구현됨 | 백업 세대에서 컬렉션 복원 |
 
 모든 리소스는 API 그룹 `qdrant.keiailab.com/v1alpha1`을 사용한다.
 
@@ -101,6 +103,55 @@ shard 연산은 항상 하나만 진행한다 — 이동은 네트워크·디스
 
 실패는 조용한 재시도 루프가 아니라 `Degraded` condition + Event로 표면화되며, 조건은 그것을 켠 경로가 끈다.
 
+## 백업과 복원
+
+qdrant 의 스냅샷은 노드 단위다 — 그것을 만든 peer 가 가진 shard 만 담는다. 그래서 컬렉션 하나의 백업은 전 peer 스냅샷의 집합이고, `QdrantBackup` 이 그 팬아웃을 맡는다.
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantBackup
+metadata: { name: nightly, namespace: data }
+spec:
+  clusterRef: my-qdrant
+  collections: []
+  schedule: "0 3 * * *"
+  retention:
+    keepLast: 7
+```
+
+`collections` 를 비우면 클러스터의 전 컬렉션이 대상이고, `schedule` 을 비우면 1회성이며, `retention` 을 생략하면 **아무것도 지우지 않는다.**
+
+생성은 비동기로 발행하고 완료는 스냅샷 목록 관측으로 판정한다 — 큰 컬렉션은 어떤 HTTP 타임아웃보다도 오래 걸린다. 스냅샷은 동시 1건만 진행한다. 해석할 수 없는 cron 은 조용히 안 도는 대신 `Degraded` 로 표면화된다.
+
+스냅샷 보관을 S3 호환 버킷으로 돌리면 qdrant 가 직접 그곳에 쓴다. 오퍼레이터는 바이트를 만지지 않는다.
+
+```yaml
+spec:
+  snapshots:
+    storage: S3
+    s3:
+      bucket: qdrant-backups
+      endpointURL: http://rook-ceph-rgw-my-store.rook-ceph.svc:80
+      credentials:
+        name: qdrant-backup-s3
+```
+
+클러스터와 그 엔드포인트 사이에 NetworkPolicy 가 있다면 서비스 포트가 아니라 **DNAT 된 파드 포트**를 열어야 한다 — 틀리면 403 이 아니라 무응답으로 나타난다.
+
+복원은 별도의 1회성 리소스다.
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantRestore
+spec:
+  clusterRef: my-qdrant
+  collection: my-vectors
+  fromBackup: nightly
+  priority: snapshot
+```
+
+복원을 위해 무엇도 지우지 않는다. qdrant 문서는 컬렉션을 지웠다 다시 만들라고 하지만 그 삭제는 되돌릴 수 없다 — `priority: snapshot` 이 같은 결과를 파괴 없이 낸다. 완료된 `QdrantRestore` 는 다시 돌지 않는다. 재실행은 그 뒤에 쓰인 데이터를 조용히 되돌린다.
+
 ## 정직한 한계 (반드시 읽어주세요)
 
 이 오퍼레이터는 "새 기능"보다 "파괴적 실수를 구조적으로 막는 것"에 무게를 둔다.
@@ -108,7 +159,8 @@ shard 연산은 항상 하나만 진행한다 — 이동은 네트워크·디스
 1. **immutable 필드 변경은 지원되지 않는다.** StatefulSet의 immutable 필드(`serviceName` / `volumeClaimTemplates` / `selector`, 예: `persistence.size`)를 건드리는 spec 변경은 crash-loop patch를 시도하는 대신 `Degraded` condition + Event로 표면화되며 StatefulSet은 그대로 보존된다. 제어된 recreate는 Phase D 과제다.
 2. **컬렉션을 재생성하지 않는다.** `QdrantCollection` spec이 라이브 컬렉션과 vector size · distance · replication factor에서 어긋나면 `ParamsMismatch`로 보고하고 멈춘다. 비파괴 이행 경로가 있는 것은 `shardNumber`뿐이다(alias re-shard).
 3. **성한 잉여 복제본은 지우지 않는다.** `replication_factor`를 초과하는 replica는 관측·보고만 하고 자동 드롭하지 않는다. 죽은 사본만이 예외다 — 서빙에 쓰이지 않고, 성한 사본이 복제 계수를 충족한 뒤에만 회수된다.
-4. **크기 기반 배치는 전 peer 관측을 요구한다.** 2차 균형 기준이 되는 peer별 points는 peer를 하나씩 돌며 모은다. 하나라도 응답하지 않으면 부분 지도로 판단하는 대신 크기 단계 전체를 건너뛴다.
+4. **S3 에서 복원하려면 위치를 명시해야 한다.** qdrant 는 URL 또는 로컬 파일에서 복원하며 `s3://` 위치를 받지 않는다. 그리고 스냅샷이 버킷에 있으면 peer 가 그것을 HTTP 로 서빙하지 않는다. 따라서 `fromBackup` 은 peer 로컬 스냅샷에만 쓸 수 있고, S3 보관이면 `spec.sources` 에 peer 별 주소를 준다. 오퍼레이터는 존재하지 않는 URL 로 복원을 발행하는 대신 주소를 모른다고 말하고 멈춘다.
+5. **크기 기반 배치는 전 peer 관측을 요구한다.** 2차 균형 기준이 되는 peer별 points는 peer를 하나씩 돌며 모은다. 하나라도 응답하지 않으면 부분 지도로 판단하는 대신 크기 단계 전체를 건너뛴다.
 
 데이터 안전을 위해 PVC(`volumeClaimTemplates`)는 오퍼레이터가 **의도적으로 소유하지 않는다** — `QdrantCluster`를 삭제해도 PVC는 남는다(`persistence.retentionPolicy: Delete`를 설정한 경우에만 회수된다).
 
@@ -176,7 +228,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | 오퍼레이터 기반 + 프로비저닝 | `QdrantCluster` | scaffold · 컨트롤러 · RBAC + 선언적 분산 클러스터 기동 | — | **완료** |
 | **B** | 컬렉션 / shard 오케스트레이션 | `QdrantCollection` | 선언적 컬렉션 + auto-rebalance(관측 → 계획 → `move_shard`) + 복제 계수 수리 + alias re-shard + 안전한 scale-in drain | A | **완료** |
-| **C** | 데이터 보호 | `QdrantBackup` | 전 peer snapshot API 스케줄 백업 · S3 오브젝트 스토리지 · 보존기간 | A | **백업 완료**, 복원 진행 중 |
+| **C** | 데이터 보호 | `QdrantBackup` / `QdrantRestore` | 전 peer snapshot API 스케줄 백업 · S3 오브젝트 스토리지 · 보존기간 · 복원 | A | **완료** |
 | **D** | Day-2 / 업그레이드 | (status / webhook) | Raft-aware 무중단 롤링 업그레이드 · health gate · observability · TLS | A | 예정 |
 | **E** | 오토스케일링 통합 | (`/scale` subresource) | 스케일 트리거 → Phase B의 rebalance 머신에 연결 | B | **완료** — `QdrantCluster`를 KEDA·HPA가 직접 스케일한다. 전용 CRD는 불필요했다 |
 

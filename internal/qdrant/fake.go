@@ -58,6 +58,8 @@ type Fake struct {
 	SnapshotSeq int
 	// SnapshotNow 는 creation_time 을 고정하고 싶을 때 쓴다(비면 실제 시각).
 	SnapshotNow string
+	// Recovered 는 복원 호출 기록 "collection<-location(priority)" (assert 용).
+	Recovered []string
 }
 
 func NewFake() *Fake {
@@ -466,6 +468,21 @@ func (f *Fake) DeleteSnapshot(_ context.Context, collection, name string) error 
 		func(s SnapshotInfo) bool { return s.Name == name })
 	if len(f.Snapshots[collection]) == before {
 		return fmt.Errorf("snapshot %s not found in %s", name, collection)
+	}
+	return nil
+}
+
+// RecoverSnapshot 은 호출 기록만 남긴다 — 실제 데이터 이동은 실서버 몫이라 e2e 가 덮는다.
+func (f *Fake) RecoverSnapshot(_ context.Context, collection, location, priority string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["RecoverSnapshot"]; err != nil {
+		return err
+	}
+	f.Recovered = append(f.Recovered, fmt.Sprintf("%s<-%s(%s)", collection, location, priority))
+	// 복원은 없는 컬렉션을 만들어 준다.
+	if _, ok := f.Collections[collection]; !ok {
+		f.Collections[collection] = CollectionInfo{Exists: true}
 	}
 	return nil
 }

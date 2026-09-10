@@ -1,0 +1,19 @@
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantRestore
+metadata:
+  name: rollback-vec
+  namespace: data
+spec:
+  clusterRef: my-qdrant
+  collection: my-vectors
+  # 정상 경로 — 백업 CR 의 세대를 그대로 되돌린다(스냅샷이 peer 로컬일 때).
+  fromBackup: nightly
+  # 스냅샷이 S3 에 있으면 peer 가 그것을 HTTP 로 서빙하지 않으므로 위치를 직접 준다:
+  # sources:
+  #   - peer: 0
+  #     location: https://s3.example.com/qdrant-backups/my-vectors-0.snapshot
+  #   - peer: 1
+  #     location: https://s3.example.com/qdrant-backups/my-vectors-1.snapshot
+  #
+  # 충돌 해소: snapshot(기본) | replica | no_sync
+  priority: snapshot

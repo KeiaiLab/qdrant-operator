@@ -42,6 +42,8 @@ This operator is that control loop. Provisioning and shard orchestration are imp
 |---|---|---|
 | `QdrantCluster` | Implemented | A standalone instance or a distributed (Raft) Qdrant cluster, with shard rebalancing and safe scale-in |
 | `QdrantCollection` | Implemented | Declarative collections — create, adopt, and alias-based re-sharding |
+| `QdrantBackup` | Implemented | Scheduled snapshot backups across every peer, with retention |
+| `QdrantRestore` | Implemented | Restore a collection from a backup generation |
 
 All resources use the API group `qdrant.keiailab.com/v1alpha1`.
 
@@ -101,6 +103,53 @@ Only one shard operation is in flight at a time — moves are expensive in netwo
 
 Failures surface as a `Degraded` condition and an Event rather than a silent retry loop, and a condition is cleared by the same path that raised it.
 
+## Backup and restore
+
+A snapshot in Qdrant is node-local: it captures only the shards on the peer that produced it. One backup of a collection is therefore the set of every peer's snapshot, and `QdrantBackup` fans out accordingly.
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantBackup
+metadata: { name: nightly, namespace: data }
+spec:
+  clusterRef: my-qdrant
+  collections: []          # empty = every collection in the cluster
+  schedule: "0 3 * * *"    # omit for a one-shot backup
+  retention:
+    keepLast: 7            # omit and nothing is ever deleted
+```
+
+Creation is issued asynchronously and completion is decided by observing the snapshot list — a large collection takes far longer than any HTTP timeout. One snapshot is in flight at a time. A schedule that cannot be parsed surfaces as `Degraded` rather than a backup that silently never runs.
+
+Point snapshot storage at an S3-compatible bucket and Qdrant writes there itself; the operator never handles the bytes.
+
+```yaml
+spec:
+  snapshots:
+    storage: S3
+    s3:
+      bucket: qdrant-backups
+      endpointURL: http://rook-ceph-rgw-my-store.rook-ceph.svc:80
+      credentials:
+        name: qdrant-backup-s3   # an ObjectBucketClaim secret works as-is
+```
+
+If a NetworkPolicy stands between the cluster and that endpoint, allow the **DNATed pod port**, not the service port — getting it wrong presents as a hang rather than a 403.
+
+Restore is a separate one-shot resource:
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantRestore
+spec:
+  clusterRef: my-qdrant
+  collection: my-vectors
+  fromBackup: nightly      # or list spec.sources with explicit per-peer locations
+  priority: snapshot       # conflicts resolve in favour of the snapshot
+```
+
+Nothing is deleted to make room for a restore. Qdrant's own guidance is to drop and recreate the collection first, but that deletion is irreversible; `priority: snapshot` gets the same result without it. A completed `QdrantRestore` never runs again — re-running it would silently roll back everything written since.
+
 ## Honest limitations (please read)
 
 The operator weighs "structurally preventing destructive mistakes" over "new features".
@@ -108,7 +157,8 @@ The operator weighs "structurally preventing destructive mistakes" over "new fea
 1. **immutable-field changes are unsupported.** Spec changes that touch a StatefulSet immutable field (`serviceName` / `volumeClaimTemplates` / `selector`, e.g. `persistence.size`) are surfaced via a `Degraded` condition + Event instead of a crash-looping patch; the StatefulSet is preserved. Controlled recreate is a Phase D task.
 2. **Collections are never recreated.** If a `QdrantCollection` spec disagrees with the live collection on vector size, distance, or replication factor, the operator reports `ParamsMismatch` and stops. Only `shardNumber` has a non-destructive migration path (alias re-shard).
 3. **Surplus healthy replicas are not removed.** Replicas above `replication_factor` are observed and reported, never auto-dropped. Dead replicas are the one exception — they serve nothing, and they are only reclaimed after healthy copies meet the replication factor.
-4. **Size-aware placement needs every peer reachable.** The per-peer point counts that drive the secondary balancing criterion are collected peer by peer; if any peer fails to answer, the size stage is skipped entirely rather than acting on a partial map.
+4. **Restoring from S3 needs explicit locations.** Qdrant recovers from a URL or a local file; it does not accept an `s3://` location, and a peer does not serve its own snapshots over HTTP once they live in a bucket. `fromBackup` therefore only works for peer-local snapshots — with S3 storage, give `spec.sources` a reachable URL per peer. The operator refuses to guess an address rather than issuing a restore against a URL that does not exist.
+5. **Size-aware placement needs every peer reachable.** The per-peer point counts that drive the secondary balancing criterion are collected peer by peer; if any peer fails to answer, the size stage is skipped entirely rather than acting on a partial map.
 
 For data safety, PVCs (`volumeClaimTemplates`) are **intentionally not owned** by the operator — deleting a `QdrantCluster` leaves the PVCs behind (they are reclaimed only when you set `persistence.retentionPolicy: Delete`).
 
@@ -176,7 +226,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | Operator foundation + provisioning | `QdrantCluster` | scaffold · controller · RBAC + declarative distributed cluster bring-up | — | **Done** |
 | **B** | Collection / shard orchestration | `QdrantCollection` | declarative collections + auto-rebalance (observe → plan → `move_shard`) + replication-factor repair + alias re-shard + safe scale-in drain | A | **Done** |
-| **C** | Data protection | `QdrantBackup` | scheduled snapshot-API backups across every peer · S3 object storage · retention | A | **Backup done**, restore in progress |
+| **C** | Data protection | `QdrantBackup` / `QdrantRestore` | scheduled snapshot-API backups across every peer · S3 object storage · retention · restore | A | **Done** |
 | **D** | Day-2 / upgrades | (status / webhook) | Raft-aware zero-downtime rolling upgrades · health gate · observability · TLS | A | Planned |
 | **E** | Autoscaling integration | (`/scale` subresource) | scale triggers → wired into the Phase B rebalance machine | B | **Done** — `QdrantCluster` is directly scalable by KEDA or an HPA; no dedicated CRD was needed |
 

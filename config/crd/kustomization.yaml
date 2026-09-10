@@ -5,6 +5,7 @@ resources:
 - bases/qdrant.keiailab.com_qdrantclusters.yaml
 - bases/qdrant.keiailab.com_qdrantcollections.yaml
 - bases/qdrant.keiailab.com_qdrantbackups.yaml
+- bases/qdrant.keiailab.com_qdrantrestores.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

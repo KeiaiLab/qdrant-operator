@@ -113,6 +113,12 @@ var _ = BeforeSuite(func() {
 		QdrantClientForPeer: func(_ *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client { return peerFake(ordinal) },
 	}).SetupWithManager(mgr)).To(Succeed())
 
+	Expect((&QdrantRestoreReconciler{
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		QdrantClientForPeer: func(_ *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client { return peerFake(ordinal) },
+	}).SetupWithManager(mgr)).To(Succeed())
+
 	go func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed(), "매니저 기동 실패")

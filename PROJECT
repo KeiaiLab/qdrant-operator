@@ -36,4 +36,13 @@ resources:
   kind: QdrantBackup
   path: github.com/keiailab/qdrant-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: keiailab.com
+  group: qdrant
+  kind: QdrantRestore
+  path: github.com/keiailab/qdrant-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

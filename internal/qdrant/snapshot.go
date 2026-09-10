@@ -50,3 +50,29 @@ func (c *HTTPClient) DeleteSnapshot(ctx context.Context, collection, name string
 	path := "/collections/" + url.PathEscape(collection) + "/snapshots/" + url.PathEscape(name)
 	return c.doJSON(ctx, "DELETE", path, nil, nil)
 }
+
+// ── C-2 복원 ──
+
+// SnapshotPriority 는 복원 중 충돌 해소 방식이다.
+//
+//	replica  — 살아 있는 replica 를 우선(qdrant 기본). 복원이 사실상 무효가 될 수 있다.
+//	snapshot — 스냅샷을 우선. "되돌린다"는 뜻에 맞는 쪽.
+//	no_sync  — 동기화 없이 그대로 올린다(수동 복구용).
+const (
+	SnapshotPriorityReplica  = "replica"
+	SnapshotPrioritySnapshot = "snapshot"
+	SnapshotPriorityNoSync   = "no_sync"
+)
+
+// RecoverSnapshot 은 location 의 스냅샷으로 컬렉션을 복원한다.
+//
+// location 은 **대상 노드가 직접 닿을 수 있는 URL 또는 로컬 파일 경로**다. qdrant 는
+// s3:// 를 받지 않으므로, 스냅샷이 오브젝트 스토리지에 있으면 그것을 HTTP 로 읽을 수 있는
+// 주소여야 한다. 컬렉션이 없으면 복원이 만들어 준다.
+func (c *HTTPClient) RecoverSnapshot(ctx context.Context, collection, location, priority string) error {
+	body := map[string]any{"location": location}
+	if priority != "" {
+		body["priority"] = priority
+	}
+	return c.doJSON(ctx, "PUT", "/collections/"+url.PathEscape(collection)+"/snapshots/recover", body, nil)
+}

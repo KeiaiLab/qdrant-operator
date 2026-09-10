@@ -42,6 +42,8 @@ self-hosted Qdrant を Kubernetes 上で運用するには、StatefulSet、Servi
 |---|---|---|
 | `QdrantCluster` | 実装済み | スタンドアロンインスタンス、または分散(Raft)Qdrant クラスター — shard 再配置と安全な scale-in を含む |
 | `QdrantCollection` | 実装済み | 宣言的コレクション — 作成・採用・alias ベースの re-shard |
+| `QdrantBackup` | 実装済み | 全 peer のスナップショット定期バックアップ・保持期間 |
+| `QdrantRestore` | 実装済み | バックアップ世代からのコレクション復元 |
 
 すべてのリソースは API グループ `qdrant.keiailab.com/v1alpha1` を使用します。
 
@@ -101,6 +103,55 @@ shard 操作は常に 1 件だけ進行します — 移動はネットワーク
 
 失敗は暗黙のリトライループではなく `Degraded` condition + Event として可視化され、condition は それを立てた経路自身が下ろします。
 
+## バックアップとリストア
+
+Qdrant のスナップショットはノード単位です — それを作成した peer が持つ shard しか含みません。したがってコレクション 1 つのバックアップは全 peer のスナップショットの集合であり、`QdrantBackup` がそのファンアウトを担います。
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantBackup
+metadata: { name: nightly, namespace: data }
+spec:
+  clusterRef: my-qdrant
+  collections: []
+  schedule: "0 3 * * *"
+  retention:
+    keepLast: 7
+```
+
+`collections` を空にするとクラスターの全コレクションが対象になり、`schedule` を空にすると 1 回限りになります。`retention` を省略した場合は **何も削除しません**。
+
+作成は非同期に発行し、完了はスナップショット一覧の観測で判定します — 大きなコレクションはあらゆる HTTP タイムアウトより長くかかります。スナップショットは同時 1 件のみです。解釈できない cron は、黙って動かないのではなく `Degraded` として可視化されます。
+
+スナップショットの保存先を S3 互換バケットに向けると、Qdrant 自身がそこへ書き込みます。オペレーターはバイトを扱いません。
+
+```yaml
+spec:
+  snapshots:
+    storage: S3
+    s3:
+      bucket: qdrant-backups
+      endpointURL: http://rook-ceph-rgw-my-store.rook-ceph.svc:80
+      credentials:
+        name: qdrant-backup-s3
+```
+
+クラスターとそのエンドポイントの間に NetworkPolicy がある場合、サービスポートではなく **DNAT されたポッドポート** を開きます — 間違えると 403 ではなく無応答として現れます。
+
+リストアは独立した 1 回限りのリソースです。
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantRestore
+spec:
+  clusterRef: my-qdrant
+  collection: my-vectors
+  fromBackup: nightly
+  priority: snapshot
+```
+
+リストアのために何も削除しません。Qdrant のドキュメントはコレクションを削除して作り直すよう案内していますが、その削除は取り消せません — `priority: snapshot` が同じ結果を破壊なしに得ます。完了した `QdrantRestore` は再実行されません。再実行はその後に書き込まれたデータを黙って巻き戻します。
+
 ## 正直な制限事項(必ずお読みください)
 
 本オペレーターは「新機能」よりも「破壊的なミスを構造的に防ぐこと」を重視します。
@@ -108,7 +159,8 @@ shard 操作は常に 1 件だけ進行します — 移動はネットワーク
 1. **immutable フィールドの変更は未サポートです。** StatefulSet の immutable フィールド(`serviceName` / `volumeClaimTemplates` / `selector`。例: `persistence.size`)に触れる spec 変更は、クラッシュループする patch を試みる代わりに `Degraded` condition + Event として可視化され、StatefulSet はそのまま保持されます。制御された recreate は Phase D の課題です。
 2. **コレクションを再作成することはありません。** `QdrantCollection` の spec がライブのコレクションと vector size・distance・replication factor で食い違う場合、`ParamsMismatch` を報告して停止します。非破壊的な移行経路があるのは `shardNumber` だけです(alias re-shard)。
 3. **健全な余剰複製は削除しません。** `replication_factor` を超える replica は観測・報告のみで、自動的に drop しません。死んだ複製だけが例外です — サービスに使われず、健全な複製が複製係数を満たした後にのみ回収されます。
-4. **サイズを考慮した配置には全 peer への到達が必要です。** 二次基準となる peer ごとの points は peer を 1 つずつ辿って収集します。1 つでも応答しない場合、部分的な地図で判断する代わりにサイズ段階全体をスキップします。
+4. **S3 からのリストアには明示的な場所が必要です。** Qdrant は URL またはローカルファイルからリストアし、`s3://` の場所は受け付けません。またスナップショットがバケットにある場合、peer はそれを HTTP で配信しません。したがって `fromBackup` は peer ローカルのスナップショットにのみ使えます。S3 保存の場合は `spec.sources` に peer ごとの到達可能な URL を与えてください。オペレーターは存在しない URL に対してリストアを発行するのではなく、場所が分からないと表明して停止します。
+5. **サイズを考慮した配置には全 peer への到達が必要です。** 二次基準となる peer ごとの points は peer を 1 つずつ辿って収集します。1 つでも応答しない場合、部分的な地図で判断する代わりにサイズ段階全体をスキップします。
 
 データ安全性のため、PVC(`volumeClaimTemplates`)はオペレーターが **意図的に所有しません** — `QdrantCluster` を削除しても PVC は残ります(`persistence.retentionPolicy: Delete` を設定した場合にのみ回収されます)。
 
@@ -176,7 +228,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | オペレーター基盤 + プロビジョニング | `QdrantCluster` | scaffold・controller・RBAC + 宣言的な分散クラスター起動 | — | **完了** |
 | **B** | コレクション / shard オーケストレーション | `QdrantCollection` | 宣言的コレクション + auto-rebalance(観測 → 計画 → `move_shard`)+ 複製係数の修復 + alias re-shard + 安全な scale-in drain | A | **完了** |
-| **C** | データ保護 | `QdrantBackup` | 全 peer の snapshot API スケジュールバックアップ・S3 オブジェクトストレージ・保持期間 | A | **バックアップ完了**、リストアは進行中 |
+| **C** | データ保護 | `QdrantBackup` / `QdrantRestore` | 全 peer の snapshot API スケジュールバックアップ・S3 オブジェクトストレージ・保持期間・リストア | A | **完了** |
 | **D** | Day-2 / アップグレード | (status / webhook) | Raft-aware な無停止ローリングアップグレード・health gate・observability・TLS | A | 計画中 |
 | **E** | オートスケーリング統合 | (`/scale` subresource) | スケールトリガー → Phase B の rebalance 機構に接続 | B | **完了** — `QdrantCluster` を KEDA や HPA が直接スケールします。専用 CRD は不要でした |
 

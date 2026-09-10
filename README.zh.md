@@ -42,6 +42,8 @@
 |---|---|---|
 | `QdrantCluster` | 已实现 | 单实例或分布式(Raft)Qdrant 集群 —— 含 shard 重新平衡与安全的 scale-in |
 | `QdrantCollection` | 已实现 | 声明式集合(collection)—— 创建、接管、基于 alias 的 re-shard |
+| `QdrantBackup` | 已实现 | 全 peer 快照定时备份与保留策略 |
+| `QdrantRestore` | 已实现 | 从备份世代恢复集合 |
 
 所有资源均使用 API 组 `qdrant.keiailab.com/v1alpha1`。
 
@@ -101,6 +103,55 @@ GET .../cluster    2. 回收失效副本                   确认落地后
 
 失败不会陷入静默重试循环,而是以 `Degraded` condition + Event 呈现;condition 由点亮它的那条路径自己熄灭。
 
+## 备份与恢复
+
+Qdrant 的快照是节点级的 —— 它只包含产生它的那个 peer 上的 shard。因此一个集合的完整备份是所有 peer 快照的集合,`QdrantBackup` 负责这一扇出。
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantBackup
+metadata: { name: nightly, namespace: data }
+spec:
+  clusterRef: my-qdrant
+  collections: []
+  schedule: "0 3 * * *"
+  retention:
+    keepLast: 7
+```
+
+`collections` 留空表示集群中的全部集合,`schedule` 留空表示一次性执行,省略 `retention` 则**永不删除任何内容**。
+
+创建以异步方式下发,完成与否通过观测快照列表判定 —— 大集合所需的时间远超任何合理的 HTTP 超时。同一时刻只有一个快照在执行。无法解析的 cron 会以 `Degraded` 呈现,而不是变成一个悄悄不运行的备份。
+
+将快照存储指向 S3 兼容桶后,Qdrant 会自行写入;operator 全程不接触字节。
+
+```yaml
+spec:
+  snapshots:
+    storage: S3
+    s3:
+      bucket: qdrant-backups
+      endpointURL: http://rook-ceph-rgw-my-store.rook-ceph.svc:80
+      credentials:
+        name: qdrant-backup-s3
+```
+
+如果集群与该端点之间存在 NetworkPolicy,请放行 **DNAT 之后的 Pod 端口**而非 Service 端口 —— 弄错时表现为无响应而不是 403。
+
+恢复是独立的一次性资源:
+
+```yaml
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantRestore
+spec:
+  clusterRef: my-qdrant
+  collection: my-vectors
+  fromBackup: nightly
+  priority: snapshot
+```
+
+不会为了恢复而删除任何东西。Qdrant 官方建议先删除并重建集合,但该删除不可逆 —— `priority: snapshot` 能在不破坏的前提下得到相同结果。已完成的 `QdrantRestore` 不会再次运行:重跑会悄悄回滚此后写入的所有数据。
+
 ## 诚实的局限性(请务必阅读)
 
 相较于"新增功能",本 Operator 更看重"从结构上防止破坏性失误"。
@@ -108,7 +159,8 @@ GET .../cluster    2. 回收失效副本                   确认落地后
 1. **不支持修改 immutable 字段。** 涉及 StatefulSet immutable 字段(`serviceName` / `volumeClaimTemplates` / `selector`,例如 `persistence.size`)的 spec 变更,不会尝试 crash-loop 式的 patch,而是通过 `Degraded` condition + Event 呈现,StatefulSet 会被原样保留。可控的重建(recreate)是 Phase D 的任务。
 2. **绝不重建集合。** 若 `QdrantCollection` 的 spec 与线上集合在 vector size、distance 或 replication factor 上不一致,operator 会报告 `ParamsMismatch` 并停下。只有 `shardNumber` 存在非破坏性的迁移路径(alias re-shard)。
 3. **不会删除健全的多余副本。** 超出 `replication_factor` 的 replica 只做观测与上报,绝不自动 drop。失效副本是唯一的例外 —— 它不承担任何服务,并且只有在健全副本满足复制因子之后才会被回收。
-4. **按规模分布需要所有 peer 可达。** 驱动二级均衡标准的每 peer points 是逐个 peer 收集的;只要有一个 peer 没有响应,就整体跳过规模阶段,而不是依据不完整的映射去行动。
+4. **从 S3 恢复需要显式指定位置。** Qdrant 从 URL 或本地文件恢复,不接受 `s3://` 位置;而且快照存放在桶中之后,peer 并不会通过 HTTP 提供它。因此 `fromBackup` 只适用于 peer 本地的快照,使用 S3 存储时请在 `spec.sources` 中为每个 peer 给出可达的 URL。operator 宁可声明自己不知道地址并停下,也不会对一个并不存在的 URL 发起恢复。
+5. **按规模分布需要所有 peer 可达。** 驱动二级均衡标准的每 peer points 是逐个 peer 收集的;只要有一个 peer 没有响应,就整体跳过规模阶段,而不是依据不完整的映射去行动。
 
 出于数据安全考虑,operator **有意不持有(own)** PVC(`volumeClaimTemplates`)—— 删除 `QdrantCluster` 后 PVC 会被保留下来(仅当设置 `persistence.retentionPolicy: Delete` 时才会被回收)。
 
@@ -176,7 +228,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | Operator 基础 + 预置 | `QdrantCluster` | scaffold、controller、RBAC + 声明式分布式集群启动 | — | **已完成** |
 | **B** | 集合(Collection)/ shard 编排 | `QdrantCollection` | 声明式集合 + auto-rebalance(观测 → 规划 → `move_shard`)+ 复制因子修复 + alias re-shard + 安全的 scale-in drain | A | **已完成** |
-| **C** | 数据保护 | `QdrantBackup` | 全 peer 的 snapshot API 定时备份、S3 对象存储、保留策略 | A | **备份已完成**,恢复进行中 |
+| **C** | 数据保护 | `QdrantBackup` / `QdrantRestore` | 全 peer 的 snapshot API 定时备份、S3 对象存储、保留策略、恢复 | A | **已完成** |
 | **D** | Day-2 / 升级 | (status / webhook) | 支持 Raft 感知的零停机滚动升级、health gate、可观测性(observability)、TLS | A | 计划中 |
 | **E** | 自动扩缩容集成 | (`/scale` subresource) | 扩缩容触发器 → 接入 Phase B 的 rebalance 机制 | B | **已完成** —— KEDA 或 HPA 可直接扩缩 `QdrantCluster`,无需专用 CRD |
 

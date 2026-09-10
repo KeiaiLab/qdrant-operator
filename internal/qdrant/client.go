@@ -53,4 +53,5 @@ type Client interface {
 	CreateSnapshot(ctx context.Context, collection string) error
 	ListSnapshots(ctx context.Context, collection string) ([]SnapshotInfo, error)
 	DeleteSnapshot(ctx context.Context, collection, name string) error
+	RecoverSnapshot(ctx context.Context, collection, location, priority string) error
 }
