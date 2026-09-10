@@ -10,6 +10,15 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ## [Unreleased]
 
+### Added
+
+- `make doc-drift` — a release gate and CI job that fails when a Kind with a
+  controller is still described as planned in any README, or when the publish
+  channel count in the docs disagrees with `hack/release.sh`. Both checks are
+  mechanical. Written after 0.9.0 had to correct documentation that had been
+  three releases behind the code: the drift was never anyone's task, so it
+  never got done. A check does not forget.
+
 ## [0.9.0] - 2026-09-10
 
 ### Fixed

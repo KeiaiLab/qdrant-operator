@@ -39,10 +39,11 @@ step "0/7 사전 확인 (clean tree · 태그 미중복)"
 git fetch -q --tags origin
 ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null || { echo "태그 ${tag} 가 이미 존재" >&2; exit 1; }
 
-step "1/7 품질 게이트 (test · lint · publish-scan)"
+step "1/7 품질 게이트 (test · lint · publish-scan · doc-drift)"
 run make test
 run make lint
 run make publish-scan
+run make doc-drift
 
 step "2/7 Chart.yaml 버전 정렬 (${version} / ${tag})"
 run sed -i '' -E "s/^version: .*/version: ${version}/; s/^appVersion: .*/appVersion: \"${tag}\"/" "$chart_yaml"

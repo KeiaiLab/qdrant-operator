@@ -253,3 +253,7 @@ endef
 .PHONY: publish-scan
 publish-scan: ## 공개 적합성 스캔 — push 전 내부 참조/평가성 표현 검사 (공개 저장소 게이트)
 	bash hack/publish-scan.sh
+
+.PHONY: doc-drift
+doc-drift: ## 문서-구현 괴리 검사 — 구현된 Kind 를 README 가 "예정" 이라 말하는지 (릴리스 게이트)
+	bash hack/doc-drift-check.sh
