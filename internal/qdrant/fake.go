@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Fake 는 envtest/단위 테스트용 인메모리 구현. 동시 reconcile 에 안전하도록 잠근다.
@@ -48,6 +49,15 @@ type Fake struct {
 	// DeadReplicas: 컬렉션 → shardID → Dead 로 보고할 peer 목록(peer 영구 이탈 모사).
 	// 여기 오른 peer 는 Active 대신 Dead 로 합성된다 — 같은 사본이 두 번 나오지 않는다.
 	DeadReplicas map[string]map[uint32][]uint64
+
+	// ── C-1 스냅샷 ──
+	// Snapshots: 컬렉션 → 스냅샷 목록. Fake 한 개가 peer 한 대를 흉내내므로, 팬아웃
+	// 시나리오는 테스트가 peer 별로 Fake 를 따로 들고 있어야 한다.
+	Snapshots map[string][]SnapshotInfo
+	// SnapshotSeq 는 이름 생성용 단조 증가값 — 같은 초에 두 번 만들어도 이름이 겹치지 않는다.
+	SnapshotSeq int
+	// SnapshotNow 는 creation_time 을 고정하고 싶을 때 쓴다(비면 실제 시각).
+	SnapshotNow string
 }
 
 func NewFake() *Fake {
@@ -64,6 +74,7 @@ func NewFake() *Fake {
 		ExtraReplicas: map[string]map[uint32][]uint64{},
 		ShardPoints:   map[string]map[uint32]uint64{},
 		DeadReplicas:  map[string]map[uint32][]uint64{},
+		Snapshots:     map[string][]SnapshotInfo{},
 	}
 }
 
@@ -409,3 +420,52 @@ func (f *Fake) GetPlacement(name string) map[uint32]uint64 {
 
 var _ Client = (*Fake)(nil)
 var _ Client = (*HTTPClient)(nil)
+
+// ── C-1 스냅샷 ──
+
+// CreateSnapshot 은 결정론 이름(<collection>-<seq>)으로 스냅샷을 하나 추가한다. 실서버는
+// 시각 기반 이름을 쓰지만 테스트가 그것에 의존하면 시간에 흔들린다.
+func (f *Fake) CreateSnapshot(_ context.Context, collection string) (SnapshotInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["CreateSnapshot"]; err != nil {
+		return SnapshotInfo{}, err
+	}
+	if _, ok := f.Collections[collection]; !ok {
+		return SnapshotInfo{}, fmt.Errorf("collection %s not found", collection)
+	}
+
+	f.SnapshotSeq++
+	created := f.SnapshotNow
+	if created == "" {
+		created = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	snap := SnapshotInfo{Name: fmt.Sprintf("%s-%d", collection, f.SnapshotSeq), CreationTime: created}
+	f.Snapshots[collection] = append(f.Snapshots[collection], snap)
+	return snap, nil
+}
+
+func (f *Fake) ListSnapshots(_ context.Context, collection string) ([]SnapshotInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["ListSnapshots"]; err != nil {
+		return nil, err
+	}
+	return slices.Clone(f.Snapshots[collection]), nil
+}
+
+func (f *Fake) DeleteSnapshot(_ context.Context, collection, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.ErrOn["DeleteSnapshot"]; err != nil {
+		return err
+	}
+	before := len(f.Snapshots[collection])
+	f.Snapshots[collection] = slices.DeleteFunc(f.Snapshots[collection],
+		func(s SnapshotInfo) bool { return s.Name == name })
+	if len(f.Snapshots[collection]) == before {
+		return fmt.Errorf("snapshot %s not found in %s", name, collection)
+	}
+	return nil
+}
