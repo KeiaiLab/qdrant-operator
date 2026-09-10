@@ -2,8 +2,6 @@ module github.com/keiailab/qdrant-operator
 
 go 1.26.0
 
-toolchain go1.26.6
-
 require (
 	github.com/google/go-cmp v0.7.0
 	github.com/onsi/ginkgo/v2 v2.27.4

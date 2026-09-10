@@ -22,7 +22,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: go.mod
+          # go.mod 의 go 지시자는 "최소 요구 버전"이지 빌드 핀이 아니다. minor 라인을
+          # 직접 적고 check-latest 로 최신 패치를 받는다 — Dockerfile 의 golang:1.26 과
+          # 같은 stdlib 를 검증하기 위해서다(2026-09-10: 낡은 toolchain 핀 때문에 CI 가
+          # 1.26.5 로 돌아 stdlib 권고 6건에 2주간 빨간불이었다).
+          go-version: '1.26'
           check-latest: true
       # Install + run binary directly instead of golang/govulncheck-action@v1.
       # The action performs internal `git` operations that hit HTTP 400 on
@@ -80,3 +84,46 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-image.sarif
+
+  # A scheduled scan that goes red notifies nobody. This one stayed red for two
+  # weeks (2026-08-11 → 2026-09-10) while a stale Go toolchain pin exposed six
+  # standard library advisories; the finding was real and no one was told.
+  # A gate people learn to ignore is worse than no gate.
+  report-failure:
+    needs: [govulncheck, trivy-fs, trivy-image]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or refresh the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          title='Scheduled security scan is failing'
+
+          # 본문은 파일로 만든다. $( ) 안의 heredoc 은 bash 3.2 가 파싱하지 못해
+          # 로컬에서 검증할 수 없다 - 검증 못 하는 CI 코드는 쓰지 않는다.
+          cat > "$RUNNER_TEMP/issue-body.md" <<EOF
+          The weekly security scan failed.
+
+          Run: ${RUN_URL}
+
+          Read the failing job's log:
+
+              gh run view ${RUN_ID} --log-failed
+
+          A finding here is real until proven otherwise. If a toolchain or scanner
+          pin has gone stale, that **is** the finding - fix the pin, not the symptom.
+          EOF
+
+          # 이슈는 하나만 유지한다 - 매주 새로 쌓으면 그 자체가 무시되는 소음이 된다.
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/issue-body.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md" --label security
+          fi

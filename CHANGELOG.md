@@ -21,8 +21,22 @@ fix looks the way it does. A one-line subject is not a changelog.
   gate stayed red long enough to become background noise, which is how a
   real finding gets missed. Toolchain pinned to go1.26.6.
 
+### Changed
+
+- CI takes its Go version from the minor line (`go-version: '1.26'` +
+  `check-latest`) instead of `go.mod`. The `go` directive states the minimum
+  version the module needs; it is not a build pin, and reading it as one is
+  what let CI test an older standard library than the one the published image
+  actually ships (`golang:1.26` floats to the latest patch). The `toolchain`
+  directive is gone — a pin that has to be remembered is a pin that goes
+  stale.
+
 ### Added
 
+- A `report-failure` job that opens or refreshes a single tracking issue when
+  the scheduled security scan fails. The previous failure went unnoticed for
+  two weeks because a red cron notifies nobody, and a gate people learn to
+  ignore is worse than no gate.
 - `make doc-drift` — a release gate and CI job that fails when a Kind with a
   controller is still described as planned in any README, or when the publish
   channel count in the docs disagrees with `hack/release.sh`. Both checks are

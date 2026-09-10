@@ -35,7 +35,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version-file: go.mod
+          # go.mod 의 go 지시자는 "최소 요구 버전"이지 빌드 핀이 아니다. minor 라인을
+          # 직접 적고 check-latest 로 최신 패치를 받는다 — Dockerfile 의 golang:1.26 과
+          # 같은 stdlib 를 검증하기 위해서다(2026-09-10: 낡은 toolchain 핀 때문에 CI 가
+          # 1.26.5 로 돌아 stdlib 권고 6건에 2주간 빨간불이었다).
+          go-version: '1.26'
           check-latest: true
           cache: true
       - name: Install go-licenses
