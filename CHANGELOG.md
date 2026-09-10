@@ -10,6 +10,17 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ## [Unreleased]
 
+### Fixed
+
+- The security scan had been red since 2026-08-25 — on a commit that passed
+  on 2026-08-10 without a line changing in between. `setup-go` installs the
+  `toolchain` directive verbatim, so CI built against Go 1.26.5 while six
+  standard-library advisories (GO-2026-6218, -6091, -6090, -6089, -5972,
+  -5026) were fixed in 1.26.6. The published binary was never affected —
+  the Dockerfile's `golang:1.26` base floats to the latest patch — but the
+  gate stayed red long enough to become background noise, which is how a
+  real finding gets missed. Toolchain pinned to go1.26.6.
+
 ### Added
 
 - `make doc-drift` — a release gate and CI job that fails when a Kind with a
