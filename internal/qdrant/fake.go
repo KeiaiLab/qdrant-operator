@@ -425,14 +425,14 @@ var _ Client = (*HTTPClient)(nil)
 
 // CreateSnapshot 은 결정론 이름(<collection>-<seq>)으로 스냅샷을 하나 추가한다. 실서버는
 // 시각 기반 이름을 쓰지만 테스트가 그것에 의존하면 시간에 흔들린다.
-func (f *Fake) CreateSnapshot(_ context.Context, collection string) (SnapshotInfo, error) {
+func (f *Fake) CreateSnapshot(_ context.Context, collection string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.ErrOn["CreateSnapshot"]; err != nil {
-		return SnapshotInfo{}, err
+		return err
 	}
 	if _, ok := f.Collections[collection]; !ok {
-		return SnapshotInfo{}, fmt.Errorf("collection %s not found", collection)
+		return fmt.Errorf("collection %s not found", collection)
 	}
 
 	f.SnapshotSeq++
@@ -443,7 +443,7 @@ func (f *Fake) CreateSnapshot(_ context.Context, collection string) (SnapshotInf
 
 	snap := SnapshotInfo{Name: fmt.Sprintf("%s-%d", collection, f.SnapshotSeq), CreationTime: created}
 	f.Snapshots[collection] = append(f.Snapshots[collection], snap)
-	return snap, nil
+	return nil
 }
 
 func (f *Fake) ListSnapshots(_ context.Context, collection string) ([]SnapshotInfo, error) {

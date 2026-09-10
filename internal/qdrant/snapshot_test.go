@@ -13,17 +13,21 @@ import (
 	"testing"
 )
 
-func TestCreateSnapshot_파싱(t *testing.T) {
-	srv := newTestServer(t, "/collections/vec/snapshots",
-		`{"result":{"name":"vec-2026-09-10-01-00-00.snapshot","creation_time":"2026-09-10T01:00:00","size":4096},"status":"ok"}`, nil)
+// 발행은 완료를 기다리지 않는다 — wait=false 가 붙어야 큰 컬렉션에서 타임아웃하지 않는다.
+func TestCreateSnapshot_비동기발행(t *testing.T) {
+	var gotQuery, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotQuery = r.Method, r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":null,"status":"ok"}`))
+	}))
 	defer srv.Close()
 
-	got, err := NewHTTPClient(srv.URL).CreateSnapshot(context.Background(), "vec")
-	if err != nil {
+	if err := NewHTTPClient(srv.URL).CreateSnapshot(context.Background(), "vec"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "vec-2026-09-10-01-00-00.snapshot" || got.Size != 4096 {
-		t.Fatalf("스냅샷 파싱: %+v", got)
+	if gotMethod != "POST" || gotQuery != "wait=false" {
+		t.Fatalf("발행 요청: %s ?%s", gotMethod, gotQuery)
 	}
 }
 
@@ -69,19 +73,19 @@ func TestFakeSnapshot_왕복(t *testing.T) {
 	f.SetCollection("vec", CollectionInfo{Exists: true})
 	ctx := context.Background()
 
-	first, err := f.CreateSnapshot(ctx, "vec")
-	if err != nil {
+	if err := f.CreateSnapshot(ctx, "vec"); err != nil {
 		t.Fatal(err)
 	}
-	second, _ := f.CreateSnapshot(ctx, "vec")
-	if first.Name == second.Name {
-		t.Fatalf("이름이 겹침: %s", first.Name)
+	if err := f.CreateSnapshot(ctx, "vec"); err != nil {
+		t.Fatal(err)
 	}
 
+	// 이름은 발행 응답이 아니라 관측에서 온다(wait=false 응답에는 이름이 없다).
 	list, _ := f.ListSnapshots(ctx, "vec")
-	if len(list) != 2 {
-		t.Fatalf("목록 %d건", len(list))
+	if len(list) != 2 || list[0].Name == list[1].Name {
+		t.Fatalf("목록: %+v", list)
 	}
+	first, second := list[0], list[1]
 
 	if err := f.DeleteSnapshot(ctx, "vec", first.Name); err != nil {
 		t.Fatal(err)
@@ -95,7 +99,7 @@ func TestFakeSnapshot_왕복(t *testing.T) {
 		t.Fatal("없는 스냅샷 삭제가 성공했다")
 	}
 	// 없는 컬렉션 스냅샷도 마찬가지.
-	if _, err := f.CreateSnapshot(ctx, "없음"); err == nil {
+	if err := f.CreateSnapshot(ctx, "없음"); err == nil {
 		t.Fatal("없는 컬렉션 스냅샷이 성공했다")
 	}
 }

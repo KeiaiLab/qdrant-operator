@@ -50,7 +50,7 @@ type Client interface {
 	ScrollPoints(ctx context.Context, collection string, offset json.RawMessage, limit int) (points []json.RawMessage, next json.RawMessage, err error)
 	UpsertPoints(ctx context.Context, collection string, points []json.RawMessage) error
 	// C-1 스냅샷 — 노드 단위다. 전 peer 팬아웃은 호출자 몫.
-	CreateSnapshot(ctx context.Context, collection string) (SnapshotInfo, error)
+	CreateSnapshot(ctx context.Context, collection string) error
 	ListSnapshots(ctx context.Context, collection string) ([]SnapshotInfo, error)
 	DeleteSnapshot(ctx context.Context, collection, name string) error
 }

@@ -27,11 +27,15 @@ type SnapshotInfo struct {
 	Size         uint64 `json:"size"`
 }
 
-// CreateSnapshot 은 이 peer 가 가진 컬렉션 shard 의 스냅샷을 만든다.
-func (c *HTTPClient) CreateSnapshot(ctx context.Context, collection string) (SnapshotInfo, error) {
-	var out SnapshotInfo
-	err := c.doJSON(ctx, "POST", "/collections/"+url.PathEscape(collection)+"/snapshots", nil, &out)
-	return out, err
+// CreateSnapshot 은 스냅샷 생성을 **발행만** 한다 — 완료를 기다리지 않는다(wait=false).
+//
+// 큰 컬렉션의 스냅샷은 수 분이 걸려 동기 호출이 HTTP 타임아웃에 걸린다(qdrant 문서가
+// 명시적으로 경고하는 지점이다). 그래서 이 계층은 이동/복제와 같은 규율을 따른다 —
+// 발행하고, 완료는 ListSnapshots 관측으로 판정한다. 새 스냅샷의 이름도 그 관측에서 온다
+// (wait=false 응답에는 이름이 없다).
+func (c *HTTPClient) CreateSnapshot(ctx context.Context, collection string) error {
+	path := "/collections/" + url.PathEscape(collection) + "/snapshots?wait=false"
+	return c.doJSON(ctx, "POST", path, nil, nil)
 }
 
 // ListSnapshots 는 이 peer 가 보관 중인 컬렉션 스냅샷 목록이다.
