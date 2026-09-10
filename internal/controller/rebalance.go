@@ -253,6 +253,7 @@ func (r *QdrantClusterReconciler) settleActiveMove(qc *qdrantv1alpha1.QdrantClus
 		// escalation 은 스칼라 MoveBackoff 가 보존한다.
 		qc.Status.ActiveMove = nil
 		qc.Status.MoveBackoff++
+		shardOperationFailures.WithLabelValues(qc.Namespace, qc.Name).Inc()
 		d := backoff(qc.Status.MoveBackoff)
 		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: reasonMoveFailed, Message: fmt.Sprintf("%s/%d 가 %s 내 관측되지 않음(lost-command) — %v 후 재계획", am.Collection, am.ShardID, moveAppearDeadline, d), ObservedGeneration: qc.Generation})
 		commonsevents.EmitWarningf(r.Recorder, qc, "MoveFailed", "%s", "이동/드롭 명령 유실 — 재계획 예정")
@@ -286,6 +287,7 @@ func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdran
 	if err != nil {
 		qc.Status.ActiveMove = nil
 		qc.Status.MoveBackoff++
+		shardOperationFailures.WithLabelValues(qc.Namespace, qc.Name).Inc()
 		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condDegraded, Status: metav1.ConditionTrue, Reason: reasonMoveFailed, Message: err.Error(), ObservedGeneration: qc.Generation})
 		commonsevents.EmitWarning(r.Recorder, qc, "MoveFailed", err)
 		return backoff(qc.Status.MoveBackoff)
@@ -297,6 +299,7 @@ func (r *QdrantClusterReconciler) issueActiveMove(ctx context.Context, qc *qdran
 	case mv.Replicate:
 		reason = "ShardReplicateIssued"
 	}
+	shardOperations.WithLabelValues(qc.Namespace, qc.Name, kind).Inc()
 	commonsevents.Emit(r.Recorder, qc, reason, mv.String())
 	return 10 * time.Second
 }

@@ -76,6 +76,10 @@ type QdrantClusterReconciler struct {
 func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	qc := &qdrantv1alpha1.QdrantCluster{}
 	if err := r.Get(ctx, req.NamespacedName, qc); err != nil {
+		if apierrors.IsNotFound(err) {
+			// 사라진 CR 의 게이지를 남기면 마지막 값이 고정돼 영원히 알럿을 울린다.
+			forgetCluster(req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -295,6 +299,8 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 		}
 		requeue = d
 	}
+
+	clusterMetrics(qc.Namespace, qc.Name, obs, len(qc.Status.PlannedMoves), rolloutInProgress(live))
 
 	// self-trigger 방어(§5.2): status 가 실제로 변했을 때만 커밋 — steady-state 재기록 루프 차단.
 	if !apiequality.Semantic.DeepEqual(&statusBefore, &qc.Status) {

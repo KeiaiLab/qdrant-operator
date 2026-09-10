@@ -44,6 +44,16 @@ fix looks the way it does. A one-line subject is not a changelog.
   Retention is the only destructive path and stays off unless declared. An
   unparseable cron surfaces as `Degraded` rather than a backup that silently
   never runs.
+- Prometheus metrics for the loops that can fail quietly, and a
+  `PrometheusRule` covering each one. The selection rule was "does a change
+  here mean someone must do something" — a backup that stopped, a backup that
+  captured nothing, dead replicas re-replication cannot clear, a rebalance
+  that will not converge, a peer that never rejoined, a rollout the health
+  gate is holding. Shard distribution and move plans stay in `status`, where
+  you look once you already know to look. Series are dropped when their CR is
+  deleted; leaving them pins a deleted cluster's last value and alerts on it
+  forever. Metrics without rules end up on a dashboard nobody reads, which is
+  indistinguishable from having none.
 - Raft-aware rolling upgrades. A StatefulSet's own rollout advances on pod
   readiness alone, and in a distributed Qdrant that is too early: `/readyz`
   answers before the restarted peer has rejoined consensus and before its

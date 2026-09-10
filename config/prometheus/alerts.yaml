@@ -1,0 +1,68 @@
+# 이 오퍼레이터가 내는 지표는 알럿이 되라고 만든 것이다. 규칙 없이 지표만 두면
+# 대시보드에만 남고 아무도 보지 않는다 — 그 상태는 지표가 없는 것과 구별되지 않는다.
+#
+# 임계값의 근거를 각 규칙에 적어 둔다. 근거 없는 숫자는 다음 사람이 못 고친다.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/name: qdrant-operator
+  name: qdrant-operator-rules
+  namespace: system
+spec:
+  groups:
+    - name: qdrant-operator
+      rules:
+        # 백업이 조용히 멈추는 것은 잃고 나서야 안다. 일 1회 백업 기준 26시간은
+        # 한 창을 통째로 놓쳤다는 뜻이다(정상 지연에는 걸리지 않는 여유).
+        - alert: QdrantBackupStale
+          expr: time() - qdrant_operator_backup_last_success_timestamp_seconds > 26 * 3600
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "QdrantBackup {{ $labels.namespace }}/{{ $labels.name }} has not succeeded in over a day"
+            description: "Check the CR's conditions — an unparseable schedule, an unreachable cluster and a failing snapshot all land here."
+
+        # 백업은 성공했는데 산출물이 0 이면 성공으로 보이는 실패다(대상 컬렉션 선택 오류 등).
+        - alert: QdrantBackupEmpty
+          expr: qdrant_operator_backup_snapshots == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "QdrantBackup {{ $labels.namespace }}/{{ $labels.name }} produced no snapshots"
+            description: "The generation completed with nothing to back up. Check spec.collections against the collections that actually exist."
+
+        # 재복제가 바로 걷어내므로 한 시간이 넘게 남아 있다면 수리가 진행하지 못하는 중이다
+        # (peers < replication_factor 등).
+        - alert: QdrantDeadReplicas
+          expr: qdrant_operator_dead_replicas > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.name }} has {{ $value }} dead shard replica(s)"
+            description: "Durability is reduced and automatic re-replication is not clearing it."
+
+        # 이동은 동시 1건이라 계획이 길면 오래 걸리는 것이 정상이다. 6시간은 그 정상 범위를
+        # 넘어 "수렴하지 못하는 중"으로 봐야 하는 지점이다.
+        - alert: QdrantRebalanceNotConverging
+          expr: qdrant_operator_planned_moves > 0
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.name }} has had pending shard moves for 6h"
+            description: "Check status.plannedMoves and the Degraded condition. Repeated move failures show up in qdrant_operator_shard_operation_failures_total."
+
+        # 멈춘 업그레이드는 실패하지 않는다 — 건강 게이트를 통과하지 못한 채 그냥 서 있다.
+        # 이 지표가 없으면 아무도 모른다.
+        - alert: QdrantUpgradeStalled
+          expr: qdrant_operator_upgrade_in_progress == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.name }} rollout has been gated for an hour"
+            description: "The operator holds the rollout until the restarted peer rejoins consensus and every shard is Active. Something is not coming back."

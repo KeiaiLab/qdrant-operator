@@ -151,6 +151,24 @@ spec:
 
 Nothing is deleted to make room for a restore. Qdrant's own guidance is to drop and recreate the collection first, but that deletion is irreversible; `priority: snapshot` gets the same result without it. A completed `QdrantRestore` never runs again — re-running it would silently roll back everything written since.
 
+## Observability
+
+The controller exposes Prometheus metrics on the standard controller-runtime endpoint. The set is deliberately small — only values that should make someone do something. Shard distribution and move plans stay in `status`, where you look once you already know to look.
+
+| Metric | What it tells you |
+|---|---|
+| `qdrant_operator_backup_last_success_timestamp_seconds` | A backup that has quietly stopped. This is the only way to notice. |
+| `qdrant_operator_backup_snapshots` | A backup that succeeded and captured nothing — a failure that looks like a success. |
+| `qdrant_operator_dead_replicas` | Durability is reduced and re-replication is not clearing it. |
+| `qdrant_operator_planned_moves` | Rebalancing is not converging. |
+| `qdrant_operator_peers` | A peer has not come back into consensus. |
+| `qdrant_operator_upgrade_in_progress` | A rollout is being held by the health gate. A stalled upgrade never fails, so nothing else reports it. |
+| `qdrant_operator_shard_operations_total` / `_failures_total` | Issue volume and the failure rate behind it. |
+
+`config/prometheus/alerts.yaml` ships a `PrometheusRule` covering each of these, with the reasoning for every threshold written next to it. Metrics without rules end up on a dashboard nobody reads, which is indistinguishable from having no metrics.
+
+Series are removed when their CR is deleted — otherwise a deleted cluster's last value stays pinned and alerts forever.
+
 ## Honest limitations (please read)
 
 The operator weighs "structurally preventing destructive mistakes" over "new features".
@@ -228,7 +246,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | Operator foundation + provisioning | `QdrantCluster` | scaffold · controller · RBAC + declarative distributed cluster bring-up | — | **Done** |
 | **B** | Collection / shard orchestration | `QdrantCollection` | declarative collections + auto-rebalance (observe → plan → `move_shard`) + replication-factor repair + alias re-shard + safe scale-in drain | A | **Done** |
 | **C** | Data protection | `QdrantBackup` / `QdrantRestore` | scheduled snapshot-API backups across every peer · S3 object storage · retention · restore | A | **Done** |
-| **D** | Day-2 / upgrades | (status) | Raft-aware rolling upgrades · health gate · observability · TLS | A | **Upgrades and health gate done**; observability and TLS remain |
+| **D** | Day-2 / upgrades | (status / metrics) | Raft-aware rolling upgrades · health gate · observability · TLS | A | **Done except TLS** |
 | **E** | Autoscaling integration | (`/scale` subresource) | scale triggers → wired into the Phase B rebalance machine | B | **Done** — `QdrantCluster` is directly scalable by KEDA or an HPA; no dedicated CRD was needed |
 
 Dependency graph: `A → {B, C, D}` can proceed in parallel; `E` requires `B`. Phase B is the core value of this project (automated shard rebalancing).

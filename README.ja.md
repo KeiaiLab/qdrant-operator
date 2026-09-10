@@ -153,6 +153,24 @@ spec:
 
 リストアのために何も削除しません。Qdrant のドキュメントはコレクションを削除して作り直すよう案内していますが、その削除は取り消せません — `priority: snapshot` が同じ結果を破壊なしに得ます。完了した `QdrantRestore` は再実行されません。再実行はその後に書き込まれたデータを黙って巻き戻します。
 
+## 可観測性
+
+コントローラーは controller-runtime の標準エンドポイントで Prometheus メトリクスを公開します。項目は意図的に少なくしています — **値が変われば誰かが何かをすべきもの** だけです。shard の分布や移動計画は `status` に残ります。それらは既に見る理由ができた後に見るものです。
+
+| メトリクス | 何を示すか |
+|---|---|
+| `qdrant_operator_backup_last_success_timestamp_seconds` | 静かに止まったバックアップ。これ以外に気づく手段がありません |
+| `qdrant_operator_backup_snapshots` | 成功したのに何も取れていないバックアップ — 成功に見える失敗 |
+| `qdrant_operator_dead_replicas` | 耐久性が落ち、再レプリケーションで解消できていない状態 |
+| `qdrant_operator_planned_moves` | 再配置が収束していない状態 |
+| `qdrant_operator_peers` | peer が合意に戻れていない |
+| `qdrant_operator_upgrade_in_progress` | ロールアウトがヘルスゲートで止まっている。停止したアップグレードは失敗しないため、他の何も知らせません |
+| `qdrant_operator_shard_operations_total` / `_failures_total` | 発行量とその背後の失敗率 |
+
+`config/prometheus/alerts.yaml` に各メトリクスに対応する `PrometheusRule` があり、しきい値ごとに根拠を併記しています。ルールのないメトリクスは誰も見ないダッシュボードに残り、その状態はメトリクスが無いことと区別できません。
+
+CR が削除されると時系列も破棄します — 残すと削除済みクラスターの最終値が固定され、永遠にアラートを鳴らします。
+
 ## 正直な制限事項(必ずお読みください)
 
 本オペレーターは「新機能」よりも「破壊的なミスを構造的に防ぐこと」を重視します。
@@ -230,7 +248,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | オペレーター基盤 + プロビジョニング | `QdrantCluster` | scaffold・controller・RBAC + 宣言的な分散クラスター起動 | — | **完了** |
 | **B** | コレクション / shard オーケストレーション | `QdrantCollection` | 宣言的コレクション + auto-rebalance(観測 → 計画 → `move_shard`)+ 複製係数の修復 + alias re-shard + 安全な scale-in drain | A | **完了** |
 | **C** | データ保護 | `QdrantBackup` / `QdrantRestore` | 全 peer の snapshot API スケジュールバックアップ・S3 オブジェクトストレージ・保持期間・リストア | A | **完了** |
-| **D** | Day-2 / アップグレード | (status) | Raft-aware なローリングアップグレード・health gate・observability・TLS | A | **アップグレードと health gate は完了**、observability と TLS は残り |
+| **D** | Day-2 / アップグレード | (status / metrics) | Raft-aware なローリングアップグレード・health gate・observability・TLS | A | **TLS のみ残り** |
 | **E** | オートスケーリング統合 | (`/scale` subresource) | スケールトリガー → Phase B の rebalance 機構に接続 | B | **完了** — `QdrantCluster` を KEDA や HPA が直接スケールします。専用 CRD は不要でした |
 
 依存グラフ: `A → {B, C, D}` は並行して進めることができ、`E` は `B` の完了を必要とします。Phase B(shard 再配置の自動化)が本プロジェクトの中核的価値です。

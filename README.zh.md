@@ -153,6 +153,24 @@ spec:
 
 不会为了恢复而删除任何东西。Qdrant 官方建议先删除并重建集合,但该删除不可逆 —— `priority: snapshot` 能在不破坏的前提下得到相同结果。已完成的 `QdrantRestore` 不会再次运行:重跑会悄悄回滚此后写入的所有数据。
 
+## 可观测性
+
+Controller 通过 controller-runtime 的标准端点暴露 Prometheus 指标。这份清单刻意保持简短 —— 只收录**变化后需要有人采取行动**的值。shard 分布与移动计划留在 `status` 中:那是你已经有理由去看之后才看的东西。
+
+| 指标 | 说明什么 |
+|---|---|
+| `qdrant_operator_backup_last_success_timestamp_seconds` | 悄悄停掉的备份。除此之外没有别的办法察觉 |
+| `qdrant_operator_backup_snapshots` | 成功了却什么都没备到 —— 看起来像成功的失败 |
+| `qdrant_operator_dead_replicas` | 持久性下降,且重新复制未能消除 |
+| `qdrant_operator_planned_moves` | 重新平衡没有收敛 |
+| `qdrant_operator_peers` | 有 peer 没有回到共识中 |
+| `qdrant_operator_upgrade_in_progress` | 滚动升级被健康门禁拦住。停滞的升级不会失败,因此没有别的东西会报告它 |
+| `qdrant_operator_shard_operations_total` / `_failures_total` | 下发量以及其背后的失败率 |
+
+`config/prometheus/alerts.yaml` 提供了覆盖上述每个指标的 `PrometheusRule`,并在每个阈值旁写明依据。没有规则的指标只会留在无人查看的仪表盘上,而那与没有指标毫无区别。
+
+CR 被删除时其时间序列也会一并清除 —— 否则已删除集群的最后一个值会被永久固定,并持续触发告警。
+
 ## 诚实的局限性(请务必阅读)
 
 相较于"新增功能",本 Operator 更看重"从结构上防止破坏性失误"。
@@ -230,7 +248,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | Operator 基础 + 预置 | `QdrantCluster` | scaffold、controller、RBAC + 声明式分布式集群启动 | — | **已完成** |
 | **B** | 集合(Collection)/ shard 编排 | `QdrantCollection` | 声明式集合 + auto-rebalance(观测 → 规划 → `move_shard`)+ 复制因子修复 + alias re-shard + 安全的 scale-in drain | A | **已完成** |
 | **C** | 数据保护 | `QdrantBackup` / `QdrantRestore` | 全 peer 的 snapshot API 定时备份、S3 对象存储、保留策略、恢复 | A | **已完成** |
-| **D** | Day-2 / 升级 | (status) | Raft 感知的滚动升级、health gate、可观测性(observability)、TLS | A | **升级与 health gate 已完成**,可观测性与 TLS 待办 |
+| **D** | Day-2 / 升级 | (status / metrics) | Raft 感知的滚动升级、health gate、可观测性(observability)、TLS | A | **仅剩 TLS** |
 | **E** | 自动扩缩容集成 | (`/scale` subresource) | 扩缩容触发器 → 接入 Phase B 的 rebalance 机制 | B | **已完成** —— KEDA 或 HPA 可直接扩缩 `QdrantCluster`,无需专用 CRD |
 
 依赖关系图:`A → {B, C, D}` 可以并行推进,`E` 则需要 `B` 先完成。Phase B(shard 重新平衡自动化)是本项目的核心价值所在。

@@ -57,6 +57,9 @@ func (r *QdrantBackupReconciler) now() time.Time {
 func (r *QdrantBackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	bk := &qdrantv1alpha1.QdrantBackup{}
 	if err := r.Get(ctx, req.NamespacedName, bk); err != nil {
+		if apierrors.IsNotFound(err) {
+			forgetBackup(req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	statusBefore := *bk.Status.DeepCopy()
@@ -176,6 +179,8 @@ func (r *QdrantBackupReconciler) idle(ctx context.Context, bk *qdrantv1alpha1.Qd
 			ObservedGeneration: bk.Generation,
 		})
 		r.clearDegraded(bk)
+		backupLastSuccess.WithLabelValues(bk.Namespace, bk.Name).Set(float64(done.Unix()))
+		backupSnapshots.WithLabelValues(bk.Namespace, bk.Name).Set(float64(len(bk.Status.Snapshots)))
 		commonsevents.Emit(r.Recorder, bk, reasonBackupDone, fmt.Sprintf("스냅샷 %d건", len(bk.Status.Snapshots)))
 
 		r.prune(ctx, bk, cluster)
@@ -227,9 +232,15 @@ func (r *QdrantBackupReconciler) openGeneration(ctx context.Context, bk *qdrantv
 	plan := planGeneration(collections, cluster.Spec.Replicas)
 	if len(plan) == 0 {
 		// 백업할 것이 없다 — 실패가 아니다. 빈 세대를 성공으로 기록해 예약만 전진시킨다.
+		//
+		// 지표도 같이 갱신해야 한다. 여기서 빠뜨리면 status 는 성공인데 마지막 성공 시각이
+		// 낡은 채로 남아 "백업이 멈췄다" 알럿이 울린다. 대신 snapshots=0 이 뜨고, 그것이
+		// 정확한 신호다 — 백업은 돌았는데 담은 것이 없다.
 		done := metav1.NewTime(r.now())
 		bk.Status.LastSuccessTime = &done
 		bk.Status.Phase = phaseBackupReady
+		backupLastSuccess.WithLabelValues(bk.Namespace, bk.Name).Set(float64(done.Unix()))
+		backupSnapshots.WithLabelValues(bk.Namespace, bk.Name).Set(0)
 		return 5 * time.Minute, nil
 	}
 
