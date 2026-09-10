@@ -163,6 +163,7 @@ const (
 	reasonMoveFailed   = "MoveFailed"
 	reasonBalanced     = "Balanced"
 	phaseRunning       = "Running"
+	phaseUpgrading     = "Upgrading"
 	phaseDraining      = "Draining"
 	shardStateActive   = "Active"
 	shardStateDead     = "Dead"

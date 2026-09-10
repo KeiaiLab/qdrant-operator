@@ -73,6 +73,7 @@ Phase A 与 B 均已实现并在生产环境运行。
 - **scale-up**:新 peer 加入 Raft 并自动接收 shard
 - **scale-in**:先排空(drain)待下线的 peer(迁移 shard → 从共识中移除 → 缩容 StatefulSet),而不是直接截断
 - 被困在永久故障节点上的 pod 会被强制删除,让 StatefulSet 能够重建替代 pod
+- **Raft 感知的滚动升级**:operator 逐个序号地控制 StatefulSet 的滚动过程,只有在重启的 peer 重新加入共识、且所有 shard 恢复为 `Active` 之后才继续下一个。期间暂停重新平衡
 - `spec.rebalance.enabled: false` 即 dry-run —— 计划照常发布到 `status.plannedMoves`,只是不下发
 
 **自动扩缩容**
@@ -229,7 +230,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | Operator 基础 + 预置 | `QdrantCluster` | scaffold、controller、RBAC + 声明式分布式集群启动 | — | **已完成** |
 | **B** | 集合(Collection)/ shard 编排 | `QdrantCollection` | 声明式集合 + auto-rebalance(观测 → 规划 → `move_shard`)+ 复制因子修复 + alias re-shard + 安全的 scale-in drain | A | **已完成** |
 | **C** | 数据保护 | `QdrantBackup` / `QdrantRestore` | 全 peer 的 snapshot API 定时备份、S3 对象存储、保留策略、恢复 | A | **已完成** |
-| **D** | Day-2 / 升级 | (status / webhook) | 支持 Raft 感知的零停机滚动升级、health gate、可观测性(observability)、TLS | A | 计划中 |
+| **D** | Day-2 / 升级 | (status) | Raft 感知的滚动升级、health gate、可观测性(observability)、TLS | A | **升级与 health gate 已完成**,可观测性与 TLS 待办 |
 | **E** | 自动扩缩容集成 | (`/scale` subresource) | 扩缩容触发器 → 接入 Phase B 的 rebalance 机制 | B | **已完成** —— KEDA 或 HPA 可直接扩缩 `QdrantCluster`,无需专用 CRD |
 
 依赖关系图:`A → {B, C, D}` 可以并行推进,`E` 则需要 `B` 先完成。Phase B(shard 重新平衡自动化)是本项目的核心价值所在。

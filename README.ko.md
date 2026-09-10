@@ -73,6 +73,7 @@ Phase A와 B가 구현됐고 운영 중이다.
 - **scale-up**: 새 peer가 Raft에 합류하고 shard를 자동으로 받는다
 - **scale-in**: 떠날 peer를 드레인한 뒤(shard 이동 → 합의에서 제거 → StatefulSet 축소) 줄인다. 잘라내지 않는다
 - 영구 장애 노드에 갇힌 파드는 강제 삭제해 StatefulSet이 대체 파드를 만들게 한다
+- **Raft-aware 롤링 업그레이드**: StatefulSet 롤아웃을 오퍼레이터가 서수 하나씩 쥐고, 재기동한 peer가 합의에 복귀하고 전 shard가 다시 `Active`가 된 뒤에만 다음으로 넘어간다. 그동안 재배치는 멈춘다
 - `spec.rebalance.enabled: false`는 dry-run이다 — 계획은 `status.plannedMoves`에 그대로 노출되고 발행만 하지 않는다
 
 **오토스케일링**
@@ -229,7 +230,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | 오퍼레이터 기반 + 프로비저닝 | `QdrantCluster` | scaffold · 컨트롤러 · RBAC + 선언적 분산 클러스터 기동 | — | **완료** |
 | **B** | 컬렉션 / shard 오케스트레이션 | `QdrantCollection` | 선언적 컬렉션 + auto-rebalance(관측 → 계획 → `move_shard`) + 복제 계수 수리 + alias re-shard + 안전한 scale-in drain | A | **완료** |
 | **C** | 데이터 보호 | `QdrantBackup` / `QdrantRestore` | 전 peer snapshot API 스케줄 백업 · S3 오브젝트 스토리지 · 보존기간 · 복원 | A | **완료** |
-| **D** | Day-2 / 업그레이드 | (status / webhook) | Raft-aware 무중단 롤링 업그레이드 · health gate · observability · TLS | A | 예정 |
+| **D** | Day-2 / 업그레이드 | (status) | Raft-aware 롤링 업그레이드 · health gate · observability · TLS | A | **업그레이드·health gate 완료**, observability·TLS 남음 |
 | **E** | 오토스케일링 통합 | (`/scale` subresource) | 스케일 트리거 → Phase B의 rebalance 머신에 연결 | B | **완료** — `QdrantCluster`를 KEDA·HPA가 직접 스케일한다. 전용 CRD는 불필요했다 |
 
 의존 그래프: `A → {B, C, D}`는 병렬 진행 가능하고, `E`는 `B` 완료가 필요하다. Phase B가 이 프로젝트의 핵심 가치(shard 재배치 자동화)다.

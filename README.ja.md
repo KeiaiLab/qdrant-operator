@@ -73,6 +73,7 @@ Phase A と B は実装済みで、本番稼働しています。
 - **scale-up**: 新しい peer が Raft に参加し、shard を自動的に受け取ります
 - **scale-in**: 離脱する peer をドレイン(shard 移動 → 合意から除去 → StatefulSet 縮小)してから縮小します。切り捨てはしません
 - 恒久的に故障したノードに取り残された pod は強制削除し、StatefulSet が代替 pod を作成できるようにします
+- **Raft-aware なローリングアップグレード**: StatefulSet のロールアウトをオペレーターが序数ごとに制御し、再起動した peer が合意に復帰し全 shard が再び `Active` になってから次へ進みます。その間、再配置は停止します
 - `spec.rebalance.enabled: false` は dry-run です — 計画は `status.plannedMoves` に公開され、発行だけ行いません
 
 **オートスケーリング**
@@ -229,7 +230,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | オペレーター基盤 + プロビジョニング | `QdrantCluster` | scaffold・controller・RBAC + 宣言的な分散クラスター起動 | — | **完了** |
 | **B** | コレクション / shard オーケストレーション | `QdrantCollection` | 宣言的コレクション + auto-rebalance(観測 → 計画 → `move_shard`)+ 複製係数の修復 + alias re-shard + 安全な scale-in drain | A | **完了** |
 | **C** | データ保護 | `QdrantBackup` / `QdrantRestore` | 全 peer の snapshot API スケジュールバックアップ・S3 オブジェクトストレージ・保持期間・リストア | A | **完了** |
-| **D** | Day-2 / アップグレード | (status / webhook) | Raft-aware な無停止ローリングアップグレード・health gate・observability・TLS | A | 計画中 |
+| **D** | Day-2 / アップグレード | (status) | Raft-aware なローリングアップグレード・health gate・observability・TLS | A | **アップグレードと health gate は完了**、observability と TLS は残り |
 | **E** | オートスケーリング統合 | (`/scale` subresource) | スケールトリガー → Phase B の rebalance 機構に接続 | B | **完了** — `QdrantCluster` を KEDA や HPA が直接スケールします。専用 CRD は不要でした |
 
 依存グラフ: `A → {B, C, D}` は並行して進めることができ、`E` は `B` の完了を必要とします。Phase B(shard 再配置の自動化)が本プロジェクトの中核的価値です。

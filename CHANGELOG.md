@@ -44,6 +44,19 @@ fix looks the way it does. A one-line subject is not a changelog.
   Retention is the only destructive path and stays off unless declared. An
   unparseable cron surfaces as `Degraded` rather than a backup that silently
   never runs.
+- Raft-aware rolling upgrades. A StatefulSet's own rollout advances on pod
+  readiness alone, and in a distributed Qdrant that is too early: `/readyz`
+  answers before the restarted peer has rejoined consensus and before its
+  shards are `Active` again, so the next pod comes down while the previous one
+  is still incomplete. The operator now drives `updateStrategy.partition` one
+  ordinal at a time and only lowers it once the pod is ready, the peer is back
+  in consensus, every shard is `Active` and no transfer is in flight. If the
+  cluster cannot be observed, the rollout holds where it is — a stalled
+  upgrade is visible in status, a pod taken down too early is not. `Dead`
+  replicas deliberately do not block it; that is the replication repair's job,
+  and gating on it would repeat the deadlock fixed in 0.9.0. Rebalancing
+  pauses for the duration. Outside a rollout the rendered StatefulSet is
+  unchanged.
 - `QdrantRestore` — one-shot restore of a collection from a backup generation.
   Restore is per-node too, so the CR fans out one recovery per peer, each
   reading its own snapshot. Nothing is deleted to make room: Qdrant's guidance

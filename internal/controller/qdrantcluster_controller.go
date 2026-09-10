@@ -140,10 +140,38 @@ func (r *QdrantClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			"apiKey 가 설정됐으나 TLS 비활성 — 키가 평문으로 전송됩니다")
 	}
 
+	// D-1 Raft-aware 롤링 업그레이드 — 롤아웃 중일 때만 partition 을 쥔다. 그 외에는 0 이라
+	// 렌더 산출물이 기존과 같다. 관측은 롤아웃 중에만 하므로 정지 상태의 호출 수는 그대로다.
+	if rolloutInProgress(liveSTS) {
+		requeue := r.gateRollout(ctx, qc, liveSTS, sts)
+		if err := r.applyOwned(ctx, qc, sts); err != nil {
+			return ctrl.Result{}, err
+		}
+		if _, err := r.reconcileStatus(ctx, qc, sts); err != nil {
+			return ctrl.Result{}, err
+		}
+		return requeueOrNothing(requeue), nil
+	}
+
 	if err := r.applyOwned(ctx, qc, sts); err != nil {
 		return ctrl.Result{}, err
 	}
 	return r.reconcileStatus(ctx, qc, sts)
+}
+
+// gateRollout 은 업그레이드 진행도를 판정해 desired STS 의 partition 을 조정한다. phase 표기는
+// reconcileStatus 가 소유하므로 여기서 건드리지 않는다 — 두 곳에서 쓰면 뒤에 도는 쪽이 이긴다.
+// 반환값은 재큐 간격: 롤아웃 중에는 스스로 깨어나야 한다(파드 Ready 변화만으로는 shard 복귀를
+// 관측할 수 없다).
+func (r *QdrantClusterReconciler) gateRollout(ctx context.Context, qc *qdrantv1alpha1.QdrantCluster, live, desired *appsv1.StatefulSet) time.Duration {
+	obs := r.observe(ctx, qc)
+	partition := upgradePartition(live, qc.Spec.Replicas, obs)
+
+	if desired.Spec.UpdateStrategy.RollingUpdate != nil {
+		desired.Spec.UpdateStrategy.RollingUpdate.Partition = &partition
+	}
+
+	return 15 * time.Second
 }
 
 // stsImmutableChanged는 라이브 STS(existing)와 렌더 결과(desired) 사이에 apiserver가 거부할
@@ -230,6 +258,18 @@ func (r *QdrantClusterReconciler) reconcileStatus(ctx context.Context, qc *qdran
 	ready := live.Status.ReadyReplicas == qc.Spec.Replicas && qc.Spec.Replicas > 0
 	var requeue time.Duration
 	switch {
+	case rolloutInProgress(live):
+		// 업그레이드 중에는 재배치를 발행하지 않는다. 파드가 차례로 내려가는 동안 분포는
+		// 계속 흔들리고, 그 관측으로 세운 계획은 롤아웃이 끝나면 이미 틀린 것이다.
+		// 표기도 Provisioning 이 아니라 Upgrading 이어야 한다 — 파드가 없는 이유가 다르다.
+		qc.Status.Phase = phaseUpgrading
+		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{
+			Type: condProgressing, Status: metav1.ConditionTrue, Reason: "Upgrading",
+			Message:            fmt.Sprintf("롤링 업그레이드 %d/%d 갱신됨", live.Status.UpdatedReplicas, qc.Spec.Replicas),
+			ObservedGeneration: qc.Generation,
+		})
+		requeue = 15 * time.Second
+
 	case !ready:
 		qc.Status.Phase = "Provisioning"
 		meta.SetStatusCondition(&qc.Status.Conditions, metav1.Condition{Type: condProgressing, Status: metav1.ConditionTrue, Reason: "Provisioning", Message: "child 리소스 조정 중", ObservedGeneration: qc.Generation})

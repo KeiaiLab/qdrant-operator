@@ -46,6 +46,8 @@ type Fake struct {
 	ShardPoints map[string]map[uint32]uint64
 	Replicated  []string // "coll/shard:from->to" (assert 용)
 
+	// ShardStates: 컬렉션 → (shardID, peerID) → 상태. 비어 있으면 Active 로 합성한다.
+	ShardStates map[string]map[[2]uint64]string
 	// DeadReplicas: 컬렉션 → shardID → Dead 로 보고할 peer 목록(peer 영구 이탈 모사).
 	// 여기 오른 peer 는 Active 대신 Dead 로 합성된다 — 같은 사본이 두 번 나오지 않는다.
 	DeadReplicas map[string]map[uint32][]uint64
@@ -77,6 +79,7 @@ func NewFake() *Fake {
 		ShardPoints:   map[string]map[uint32]uint64{},
 		DeadReplicas:  map[string]map[uint32][]uint64{},
 		Snapshots:     map[string][]SnapshotInfo{},
+		ShardStates:   map[string]map[[2]uint64]string{},
 	}
 }
 
@@ -95,6 +98,22 @@ func (f *Fake) AddReplica(name string, shardID uint32, peerID uint64) {
 		f.ExtraReplicas[name] = map[uint32][]uint64{}
 	}
 	f.ExtraReplicas[name][shardID] = append(f.ExtraReplicas[name][shardID], peerID)
+}
+
+// SetShardState 는 특정 사본의 상태를 바꾼다(전이 중·복귀 시나리오용).
+// Active 로 되돌리면 기록에서 지운다 — 상태는 하나만 남아야 한다.
+func (f *Fake) SetShardState(name string, shardID uint32, peerID uint64, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ShardStates[name] == nil {
+		f.ShardStates[name] = map[[2]uint64]string{}
+	}
+	k := [2]uint64{uint64(shardID), peerID}
+	if state == ShardStateActive {
+		delete(f.ShardStates[name], k)
+		return
+	}
+	f.ShardStates[name][k] = state
 }
 
 // MarkDead 는 shard 사본 하나를 Dead 로 만든다(노드 영구 이탈 모사).
@@ -267,6 +286,9 @@ func (f *Fake) CollectionCluster(_ context.Context, name string) (*CollectionClu
 		state := func(peerID uint64) string {
 			if slices.Contains(dead, peerID) {
 				return ShardStateDead
+			}
+			if st, ok := f.ShardStates[name][[2]uint64{uint64(sid), peerID}]; ok {
+				return st
 			}
 			return ShardStateActive
 		}

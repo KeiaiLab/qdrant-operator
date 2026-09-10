@@ -73,6 +73,7 @@ Phases A and B are implemented and running in production.
 - **scale-up**: new peers join Raft and receive shards automatically
 - **scale-in**: the departing peer is drained (move shards → remove from consensus → shrink the StatefulSet), never truncated
 - Pods stranded on a permanently failed node are force-deleted so the StatefulSet can replace them
+- **Raft-aware rolling upgrades**: the operator drives the StatefulSet's rollout one ordinal at a time and only advances once the restarted peer has rejoined consensus and every shard is `Active` again. Rebalancing pauses for the duration
 - `spec.rebalance.enabled: false` turns the loop into a dry run — plans are still published to `status.plannedMoves`, nothing is issued
 
 **Autoscaling**
@@ -227,7 +228,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 | **A** | Operator foundation + provisioning | `QdrantCluster` | scaffold · controller · RBAC + declarative distributed cluster bring-up | — | **Done** |
 | **B** | Collection / shard orchestration | `QdrantCollection` | declarative collections + auto-rebalance (observe → plan → `move_shard`) + replication-factor repair + alias re-shard + safe scale-in drain | A | **Done** |
 | **C** | Data protection | `QdrantBackup` / `QdrantRestore` | scheduled snapshot-API backups across every peer · S3 object storage · retention · restore | A | **Done** |
-| **D** | Day-2 / upgrades | (status / webhook) | Raft-aware zero-downtime rolling upgrades · health gate · observability · TLS | A | Planned |
+| **D** | Day-2 / upgrades | (status) | Raft-aware rolling upgrades · health gate · observability · TLS | A | **Upgrades and health gate done**; observability and TLS remain |
 | **E** | Autoscaling integration | (`/scale` subresource) | scale triggers → wired into the Phase B rebalance machine | B | **Done** — `QdrantCluster` is directly scalable by KEDA or an HPA; no dedicated CRD was needed |
 
 Dependency graph: `A → {B, C, D}` can proceed in parallel; `E` requires `B`. Phase B is the core value of this project (automated shard rebalancing).
