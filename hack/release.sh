@@ -92,7 +92,7 @@ else
 	((dry)) || exit 1
 fi
 
-step "7/7 발행 일관성 검증 (5채널)"
+step "7/7 발행 일관성 검증 (4채널)"
 if ((dry)); then
 	printf '  [dry] hack/verify-publish.sh %s\n' "$version"
 else

@@ -34,42 +34,81 @@
 
 在 Kubernetes 上自行运维 self-hosted Qdrant,意味着要手工拼装 StatefulSet、Service、ConfigMap 和 PVC,并且每次增删节点时都要手动迁移 shard。Qdrant 已经以公开 API 的形式提供了你所需要的全部原语(Raft peer join、`move_shard`、`replicate_shard`、collection alias),但把这些原语串联起来、并收敛到期望状态的控制循环,仍然要靠运维人员自己完成。
 
-本 Operator 将这一整套拼装与重新平衡过程,以 Kubernetes controller 的形式自动化。由于范围较大,开发被拆分为 5 个顺序推进的 Phase(见下方路线图)。
+本 Operator 就是这个控制循环。预置与 shard 编排已经实现,备份/恢复以及 Raft 感知的滚动升级尚未实现(见下方路线图)。
 
 ## 自定义资源
 
 | Kind | 状态 | 作用 |
 |---|---|---|
-| `QdrantCluster` | Phase A(已实现) | 单实例或分布式(Raft)Qdrant 集群 |
-| `QdrantCollection` | Phase B(计划中) | 支持 shard 重新平衡的声明式集合(collection) |
+| `QdrantCluster` | 已实现 | 单实例或分布式(Raft)Qdrant 集群 —— 含 shard 重新平衡与安全的 scale-in |
+| `QdrantCollection` | 已实现 | 声明式集合(collection)—— 创建、接管、基于 alias 的 re-shard |
 
 所有资源均使用 API 组 `qdrant.keiailab.com/v1alpha1`。
 
-## Phase A 范围(当前)
+## 它做什么
 
-本仓库当前仅实现 **Phase A:Operator 基础 + 预置(Provisioning)**。
+Phase A 与 B 均已实现并在生产环境运行。
 
-**范围内**
+**预置(Provisioning)**
 
 - 通过 `QdrantCluster` CRD 对分布式 Qdrant 集群进行声明式的创建/更新/删除
-- 与现有 helm chart 产出物保持一致性(parity)—— ServiceAccount、ConfigMap、headless Service、client Service、StatefulSet
-- status 上报(`phase` / `readyReplicas` / `peers` / `conditions`)
-- **scale-up**(简单的 replica 增加 —— 新 peer 加入 Raft)
+- 与手写清单保持一致性(parity)—— ServiceAccount、ConfigMap、headless Service、client Service、StatefulSet,以及 `replicas >= 2` 时的 PodDisruptionBudget
+- 将 Secret 中的 `apiKey` / `readOnlyApiKey` 接入 Qdrant 认证 env;若设置了密钥却未启用 TLS,则以 `AuthWithoutTLS` 告警
+- status 上报(`phase` / `readyReplicas` / `peers` / `shardDistribution` / `plannedMoves` / `conditions`)
 
-**范围外(推迟到后续 Phase)**
+**集合(Collection)**
 
-- 集合(collection)/ shard 重新平衡 → Phase B
+- 通过 `QdrantCollection` CRD 声明式管理集合 —— 不存在则创建,已存在则**接管**
+- 当 spec 与线上集合不一致时,以 `Degraded(ParamsMismatch)` 呈现;operator 绝不会为了对齐而重建集合
+- 默认 `onDelete: Retain` —— 删除 CR 不会删除你的数据
+- 修改 `shardNumber` 走基于 alias 的 re-shard:影子集合 → 复制 → 原子 alias 切换,切换是唯一的提交点
+
+**Shard 重新平衡**
+
+- 观测 → 计划 → 执行的持续收敛循环,shard 操作始终同时仅 1 件
+- 先在 peer 之间对齐 shard **数量**,数量均衡后再以每个 peer 的总 **points** 作为二级标准
+- 将副本不足的 shard 恢复到集合的 `replication_factor`,健全副本回归后回收失效副本
+- **scale-up**:新 peer 加入 Raft 并自动接收 shard
+- **scale-in**:先排空(drain)待下线的 peer(迁移 shard → 从共识中移除 → 缩容 StatefulSet),而不是直接截断
+- 被困在永久故障节点上的 pod 会被强制删除,让 StatefulSet 能够重建替代 pod
+- `spec.rebalance.enabled: false` 即 dry-run —— 计划照常发布到 `status.plannedMoves`,只是不下发
+
+**自动扩缩容**
+
+- `QdrantCluster` 暴露 `/scale` subresource,因此 KEDA `ScaledObject`(或 HPA)可直接驱动 `spec.replicas`,shard 迁移交给 operator 处理
+
+**未实现**
+
 - 备份 / 恢复 → Phase C
 - 支持 Raft 感知的滚动升级编排 → Phase D
-- 自动扩缩容(Autoscaling) → Phase E
+
+## 重新平衡如何运作
+
+所有自动行为都在执行**之前**先行公布。不存在需要事后追溯还原的隐藏动作。
+
+```
+观测                计划                            执行
+─────────────────  ──────────────────────────────  ─────────────────────────
+GET /cluster       1. 恢复复制因子(RF)             同时 1 件,
+GET .../cluster    2. 回收失效副本                   确认落地后
+每个 peer 的规模     3. 先数量、后规模的均衡           从头重新计划
+                   → status.plannedMoves
+```
+
+顺序本身就是安全不变式:在删除任何东西之前先恢复持久性,并且绝不把不可用的副本计入布局而误判均衡。计划在每一轮都从当前观测重新算出,且完全确定性 —— 因此被中断的 operator 无需持久化队列也能回到同一结论。
+
+任一时刻只有一个 shard 操作在进行 —— 迁移在网络、磁盘与重建索引上代价高昂,并行执行只会伤害你本想帮助的集群。均衡状态下 operator 完全不发起写入,只做读取。
+
+失败不会陷入静默重试循环,而是以 `Degraded` condition + Event 呈现;condition 由点亮它的那条路径自己熄灭。
 
 ## 诚实的局限性(请务必阅读)
 
-Phase A 是一个最小化的预置(provisioning)层,相较于"新增功能",它更看重"从结构上防止破坏性失误"。以下三种情况**属于有意不支持**的范围;发生时,operator 不会直接修改 StatefulSet,而是通过 `Degraded` condition + Event 安全地呈现出来。
+相较于"新增功能",本 Operator 更看重"从结构上防止破坏性失误"。
 
-1. **新扩容(scale-up)出来的 peer 会保持为空。** 增加 `spec.replicas` 会新增一个加入 Raft 的 StatefulSet pod,但已有的 shard 数据不会自动迁移到该 pod 上(开源版 Qdrant 没有 auto-resharding 能力)。在集合被显式重新创建或复制(replicate)到新 peer 之前,新 peer 实际上是一个空节点。该局限将在 **Phase B**(集合 / shard 编排)中得到解决。
-2. **拒绝 scale-down。** 在分布式数据库中,简单地减少 replica 数会丢失序号(ordinal)最高的 peer 及其 shard。将 `spec.replicas` 调低到低于当前值的操作会被以 `Degraded` condition 拒绝,StatefulSet 保持不变。安全的、基于 drain 的 scale-down 要到 Phase B 才会支持。
-3. **不支持修改 immutable 字段。** 涉及 StatefulSet immutable 字段(`serviceName` / `volumeClaimTemplates` / `selector`,例如 `persistence.size`)的 spec 变更,不会尝试 crash-loop 式的 patch,而是通过 `Degraded` condition + Event 呈现,StatefulSet 会被原样保留。可控的重建(recreate)是 Phase D 及之后的任务。
+1. **不支持修改 immutable 字段。** 涉及 StatefulSet immutable 字段(`serviceName` / `volumeClaimTemplates` / `selector`,例如 `persistence.size`)的 spec 变更,不会尝试 crash-loop 式的 patch,而是通过 `Degraded` condition + Event 呈现,StatefulSet 会被原样保留。可控的重建(recreate)是 Phase D 的任务。
+2. **绝不重建集合。** 若 `QdrantCollection` 的 spec 与线上集合在 vector size、distance 或 replication factor 上不一致,operator 会报告 `ParamsMismatch` 并停下。只有 `shardNumber` 存在非破坏性的迁移路径(alias re-shard)。
+3. **不会删除健全的多余副本。** 超出 `replication_factor` 的 replica 只做观测与上报,绝不自动 drop。失效副本是唯一的例外 —— 它不承担任何服务,并且只有在健全副本满足复制因子之后才会被回收。
+4. **按规模分布需要所有 peer 可达。** 驱动二级均衡标准的每 peer points 是逐个 peer 收集的;只要有一个 peer 没有响应,就整体跳过规模阶段,而不是依据不完整的映射去行动。
 
 出于数据安全考虑,operator **有意不持有(own)** PVC(`volumeClaimTemplates`)—— 删除 `QdrantCluster` 后 PVC 会被保留下来(仅当设置 `persistence.retentionPolicy: Delete` 时才会被回收)。
 
@@ -135,18 +174,20 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 
 | Phase | 子系统 | 关键 CRD | 内容 | 依赖 | 状态 |
 |---|---|---|---|---|---|
-| **A** | Operator 基础 + 预置 | `QdrantCluster` | scaffold、controller、RBAC + 声明式分布式集群启动 | — | 进行中(本仓库) |
-| **B** | 集合(Collection)/ shard 编排 | `QdrantCollection` | 声明式集合 + auto-rebalance(观测 → 规划 → `move_shard`)+ alias re-shard + 安全的 scale-in drain | A | 计划中 |
+| **A** | Operator 基础 + 预置 | `QdrantCluster` | scaffold、controller、RBAC + 声明式分布式集群启动 | — | **已完成** |
+| **B** | 集合(Collection)/ shard 编排 | `QdrantCollection` | 声明式集合 + auto-rebalance(观测 → 规划 → `move_shard`)+ 复制因子修复 + alias re-shard + 安全的 scale-in drain | A | **已完成** |
 | **C** | 数据保护 | `QdrantBackup` / `QdrantRestore` | 基于 snapshot API 的定时备份、对象存储、恢复 | A | 计划中 |
 | **D** | Day-2 / 升级 | (status / webhook) | 支持 Raft 感知的零停机滚动升级、health gate、可观测性(observability)、TLS | A | 计划中 |
-| **E** | 自动扩缩容集成 | `QdrantAutoscaler` | 扩缩容触发器 → 接入 Phase B 的 rebalance 机制 | B | 计划中 |
+| **E** | 自动扩缩容集成 | (`/scale` subresource) | 扩缩容触发器 → 接入 Phase B 的 rebalance 机制 | B | **已完成** —— KEDA 或 HPA 可直接扩缩 `QdrantCluster`,无需专用 CRD |
 
-依赖关系图:`A → {B, C, D}` 可以并行推进,`E` 则需要 `B` 先完成。Phase B(shard 重新平衡自动化)是本项目的核心价值所在,但必须先完成 Phase A —— 即 operator 掌握集群所有权的阶段。
+依赖关系图:`A → {B, C, D}` 可以并行推进,`E` 则需要 `B` 先完成。Phase B(shard 重新平衡自动化)是本项目的核心价值所在。
+
+Phase E 最终落地为 `/scale` subresource,而非 `QdrantAutoscaler` CRD:KEDA 本就能扩缩任何暴露 `/scale` 的自定义资源,再造一个自动扩缩容器只是重复发明。KEDA 负责决策,operator 负责执行。
 
 ## API
 
 - Group / Version: `qdrant.keiailab.com/v1alpha1`
-- Kind: `QdrantCluster`(Phase A)、`QdrantCollection`(Phase B,已完成 scaffold)
+- Kind: `QdrantCluster`、`QdrantCollection`
 - Domain: `keiailab.com`(`kubebuilder init --domain keiailab.com --group qdrant`)
 
 该 API 目前是 `v1alpha1`,在正式(stable)发布之前可能还会发生变更。
@@ -158,12 +199,12 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 
 ## 发布
 
-维护者通过单个命令同时发布到五个渠道 —— GitHub 标签(tag)、内部容器镜像、ghcr 容器镜像、ghcr OCI chart 和中央目录(catalog)—— 以避免遗漏任何一个渠道。
+维护者通过单个命令同时发布到四个渠道 —— GitHub 标签(tag)、ghcr 容器镜像、ghcr OCI chart 和中央目录(catalog)—— 以避免遗漏任何一个渠道。
 
 ```bash
-make release VERSION=0.7.0     # 关卡 → 打标签 → 镜像 → chart → 目录 → 验证
-DRY_RUN=1 hack/release.sh 0.7.0  # 不发布,仅打印每一步
-make verify-publish            # 检查当前状态下五个渠道的一致性
+make release VERSION=0.9.0     # 关卡 → 打标签 → 镜像 → chart → 目录 → 验证
+DRY_RUN=1 hack/release.sh 0.9.0  # 不发布,仅打印每一步
+make verify-publish            # 检查当前状态下四个渠道的一致性
 ```
 
 release gate 会先运行 `test`、`lint` 和 `publish-scan`,再用 `verify-publish`

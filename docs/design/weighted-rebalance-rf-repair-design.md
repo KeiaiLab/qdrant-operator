@@ -32,7 +32,9 @@
 - **lane 통합**: 기존 동시-1건 lane 에 `MoveStatus.Kind=Replicate` 추가. 완료 판정 =
   target 에 해당 shard Active 등장(move 와 달리 원본 잔존 — Drop=false 고정).
 - **우선순위**: `reconcileRebalance` 진입 시 재복제 계획 먼저, 비어야 리밸런스(count→size).
-- **금지**: RF 초과 replica 자동 drop 없음(관측만) — 파괴 동작 불가 원칙.
+- **금지**: RF 초과 **Active** replica 자동 drop 없음(관측만) — 파괴 동작 불가 원칙.
+  단 **Dead replica 는 예외**로 회수한다(v0.9.0, `dead-replica-repair-design.md`) —
+  서빙 불가 잔해이고 남겨두면 리밸런스 전체가 사람을 기다리며 멈춘다.
 
 ## 무행동 논증 (라이브 1-peer)
 

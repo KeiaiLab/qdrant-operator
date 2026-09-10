@@ -1,6 +1,6 @@
 apiVersion: v2
 name: qdrant-operator
-description: A Kubernetes Operator for the Qdrant vector database — declarative QdrantCluster provisioning, distributed (Raft) clusters, scale-out. MIT licensed.
+description: A Kubernetes Operator for the Qdrant vector database — declarative QdrantCluster/QdrantCollection management, distributed (Raft) clusters, automatic shard rebalancing, replication-factor repair, and drain-based scale-in. MIT licensed.
 # 차트 타입: 오퍼레이터(컨트롤러 매니저) 워크로드
 type: application
 # 차트 버전 (SemVer 2) — 차트 자체의 릴리스 버전
@@ -13,8 +13,10 @@ annotations:
   artifacthub.io/license: MIT
   artifacthub.io/operator: "true"
   artifacthub.io/changes: |
-    - kind: added
-      description: "Wire spec.apiKey and new spec.readOnlyApiKey into QDRANT__SERVICE__API_KEY / __READ_ONLY_API_KEY env (secretKeyRef); warn (AuthWithoutTLS) when a key is set without TLS."
+    - kind: fixed
+      description: "Dead replicas no longer stall the rebalancer: replication-factor repair now runs while a replica is Dead, and the dead copy is reclaimed once healthy replicas meet the factor."
+    - kind: fixed
+      description: "Replication no longer targets a peer that already holds a dead copy of the same shard."
 keywords:
   - qdrant
   - operator

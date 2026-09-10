@@ -34,42 +34,81 @@
 
 self-hosted Qdrant를 Kubernetes에서 운영하려면 StatefulSet · Service · ConfigMap · PVC를 직접 조립해야 하고, 노드를 늘리거나 줄일 때마다 shard 재배치를 수동으로 수행해야 한다. Qdrant는 이에 필요한 프리미티브(Raft peer join · `move_shard` · `replicate_shard` · collection alias)를 모두 공개 API로 제공하지만, 이를 엮어 원하는 상태로 수렴시키는 컨트롤 루프는 운영자 몫으로 남는다.
 
-이 오퍼레이터는 그 조립과 재배치를 Kubernetes 컨트롤러로 자동화한다. 스코프가 커서 5개의 순차 Phase로 나누어 개발한다(아래 로드맵 참고).
+이 오퍼레이터가 그 컨트롤 루프다. 프로비저닝과 shard 오케스트레이션은 구현됐고, 백업/복원과 Raft-aware 롤링 업그레이드는 아직이다(아래 로드맵 참고).
 
 ## 커스텀 리소스
 
 | Kind | 상태 | 하는 일 |
 |---|---|---|
-| `QdrantCluster` | Phase A (구현됨) | 단일 인스턴스 또는 분산(Raft) Qdrant 클러스터 |
-| `QdrantCollection` | Phase B (예정) | shard 재배치를 포함한 선언적 컬렉션 |
+| `QdrantCluster` | 구현됨 | 단일 인스턴스 또는 분산(Raft) Qdrant 클러스터 — shard 재배치와 안전한 scale-in 포함 |
+| `QdrantCollection` | 구현됨 | 선언적 컬렉션 — 생성 · 채택 · alias 기반 re-shard |
 
 모든 리소스는 API 그룹 `qdrant.keiailab.com/v1alpha1`을 사용한다.
 
-## Phase A 스코프 (현재)
+## 무엇을 하는가
 
-이 저장소는 현재 **Phase A: 오퍼레이터 기반 + 프로비저닝**만 구현한다.
+Phase A와 B가 구현됐고 운영 중이다.
 
-**In scope**
+**프로비저닝**
 
 - `QdrantCluster` CRD를 통한 분산 Qdrant 클러스터의 선언적 생성/수정/삭제
-- 기존 helm 차트 산출물과의 동등성(parity) — ServiceAccount, ConfigMap, headless Service, client Service, StatefulSet
-- status 보고 (`phase` / `readyReplicas` / `peers` / `conditions`)
-- **scale-up** (naive replica 증가 — 새 peer는 Raft에 join)
+- 손으로 쓴 매니페스트와의 동등성(parity) — ServiceAccount, ConfigMap, headless Service, client Service, StatefulSet, 그리고 `replicas >= 2`에서 PodDisruptionBudget
+- Secret의 `apiKey` / `readOnlyApiKey`를 Qdrant 인증 env로 배선하고, TLS 없이 키만 설정하면 `AuthWithoutTLS`로 경고
+- status 보고 (`phase` / `readyReplicas` / `peers` / `shardDistribution` / `plannedMoves` / `conditions`)
 
-**Out of scope (후속 Phase로 이관)**
+**컬렉션**
 
-- 컬렉션 / shard rebalance → Phase B
+- `QdrantCollection` CRD를 통한 선언적 컬렉션 — 없으면 생성, 이미 있으면 **채택**
+- spec이 라이브 컬렉션과 어긋나면 `Degraded(ParamsMismatch)`로 표면화한다. 맞추려고 컬렉션을 재생성하는 일은 없다
+- 기본값 `onDelete: Retain` — CR을 지워도 데이터는 지워지지 않는다
+- `shardNumber` 변경은 alias 기반 re-shard로 처리한다: shadow 컬렉션 → 복사 → 원자 alias 스왑. 스왑이 유일한 커밋점이다
+
+**Shard 재배치**
+
+- 관측 → 계획 → 실행의 상시 수렴 루프. shard 연산은 항상 동시 1건
+- peer 간 shard **개수**를 먼저 맞추고, 개수가 균형에 이르면 peer별 총 **points**를 2차 기준으로 본다
+- 복제본이 모자란 shard를 컬렉션의 `replication_factor`까지 되메우고, 성한 사본이 돌아오면 죽은 사본을 회수한다
+- **scale-up**: 새 peer가 Raft에 합류하고 shard를 자동으로 받는다
+- **scale-in**: 떠날 peer를 드레인한 뒤(shard 이동 → 합의에서 제거 → StatefulSet 축소) 줄인다. 잘라내지 않는다
+- 영구 장애 노드에 갇힌 파드는 강제 삭제해 StatefulSet이 대체 파드를 만들게 한다
+- `spec.rebalance.enabled: false`는 dry-run이다 — 계획은 `status.plannedMoves`에 그대로 노출되고 발행만 하지 않는다
+
+**오토스케일링**
+
+- `QdrantCluster`가 `/scale` subresource를 노출하므로 KEDA `ScaledObject`(또는 HPA)가 `spec.replicas`를 직접 조정하고 shard 이동은 오퍼레이터가 맡는다
+
+**미구현**
+
 - 백업 / 복원 → Phase C
 - Raft-aware 롤링 업그레이드 오케스트레이션 → Phase D
-- 오토스케일링 → Phase E
+
+## 재배치는 이렇게 돈다
+
+모든 자동 행위는 실행 **전에** 노출된다. 사후에 재구성해야 하는 숨은 작업은 없다.
+
+```
+관측                계획                            실행
+─────────────────  ──────────────────────────────  ─────────────────────────
+GET /cluster       1. 복제 계수(RF) 회복             동시 1건,
+GET .../cluster    2. 죽은 사본 회수                 완료를 확인한 뒤
+peer별 크기         3. 개수 → 크기 순 균형            처음부터 다시 계획
+                   → status.plannedMoves
+```
+
+순서가 곧 안전 불변식이다. 무언가를 지우기 전에 내구성을 먼저 회복하고, 못 쓰는 사본을 배치로 세어 균형을 오판하지 않는다. 계획은 매 회차 현재 관측에서 처음부터 다시 산출되고 완전히 결정론적이라, 중단된 오퍼레이터는 큐를 저장하지 않고도 같은 결론에서 재개한다.
+
+shard 연산은 항상 하나만 진행한다 — 이동은 네트워크·디스크·재색인 비용이 크고, 동시에 돌리면 도우려던 클러스터를 해친다. 균형 상태에서는 쓰기를 전혀 발행하지 않고 읽기만 한다.
+
+실패는 조용한 재시도 루프가 아니라 `Degraded` condition + Event로 표면화되며, 조건은 그것을 켠 경로가 끈다.
 
 ## 정직한 한계 (반드시 읽어주세요)
 
-Phase A는 "새 기능"보다 "파괴적 실수를 구조적으로 막는 것"에 무게를 둔 최소 프로비저닝 계층이다. 다음 3가지는 **의도적 미지원**이며, 발생 시 StatefulSet을 직접 건드리는 대신 `Degraded` condition + Event로 안전하게 표면화된다.
+이 오퍼레이터는 "새 기능"보다 "파괴적 실수를 구조적으로 막는 것"에 무게를 둔다.
 
-1. **새로 scale-up된 peer는 빈 상태로 남는다.** `spec.replicas`를 늘리면 새 StatefulSet pod가 Raft에 join하지만, 기존 shard 데이터가 자동으로 옮겨지지는 않는다(OSS Qdrant에는 auto-resharding이 없다). 새 peer는 컬렉션이 명시적으로 재생성되거나 replicate되기 전까지 사실상 빈 노드다. 이 한계는 **Phase B**(컬렉션 / shard 오케스트레이션)에서 해소된다.
-2. **scale-down은 거부된다.** 분산 데이터베이스에서 naive한 replica 감소는 최고 서수(highest-ordinal) peer와 그 shard를 유실시킨다. `spec.replicas`를 현재 값보다 낮추는 시도는 `Degraded` condition으로 거부되며 StatefulSet은 변경되지 않는다. 안전한 drain 기반 scale-down은 Phase B 전까지 지원하지 않는다.
-3. **immutable 필드 변경은 지원되지 않는다.** StatefulSet의 immutable 필드(`serviceName` / `volumeClaimTemplates` / `selector`, 예: `persistence.size`)를 건드리는 spec 변경은 crash-loop patch를 시도하는 대신 `Degraded` condition + Event로 표면화되며 StatefulSet은 그대로 보존된다. 제어된 recreate는 Phase D 이후 과제다.
+1. **immutable 필드 변경은 지원되지 않는다.** StatefulSet의 immutable 필드(`serviceName` / `volumeClaimTemplates` / `selector`, 예: `persistence.size`)를 건드리는 spec 변경은 crash-loop patch를 시도하는 대신 `Degraded` condition + Event로 표면화되며 StatefulSet은 그대로 보존된다. 제어된 recreate는 Phase D 과제다.
+2. **컬렉션을 재생성하지 않는다.** `QdrantCollection` spec이 라이브 컬렉션과 vector size · distance · replication factor에서 어긋나면 `ParamsMismatch`로 보고하고 멈춘다. 비파괴 이행 경로가 있는 것은 `shardNumber`뿐이다(alias re-shard).
+3. **성한 잉여 복제본은 지우지 않는다.** `replication_factor`를 초과하는 replica는 관측·보고만 하고 자동 드롭하지 않는다. 죽은 사본만이 예외다 — 서빙에 쓰이지 않고, 성한 사본이 복제 계수를 충족한 뒤에만 회수된다.
+4. **크기 기반 배치는 전 peer 관측을 요구한다.** 2차 균형 기준이 되는 peer별 points는 peer를 하나씩 돌며 모은다. 하나라도 응답하지 않으면 부분 지도로 판단하는 대신 크기 단계 전체를 건너뛴다.
 
 데이터 안전을 위해 PVC(`volumeClaimTemplates`)는 오퍼레이터가 **의도적으로 소유하지 않는다** — `QdrantCluster`를 삭제해도 PVC는 남는다(`persistence.retentionPolicy: Delete`를 설정한 경우에만 회수된다).
 
@@ -135,18 +174,20 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 
 | Phase | 서브시스템 | 핵심 CRD | 무엇을 | 의존 | 상태 |
 |---|---|---|---|---|---|
-| **A** | 오퍼레이터 기반 + 프로비저닝 | `QdrantCluster` | scaffold · 컨트롤러 · RBAC + 선언적 분산 클러스터 기동 | — | 진행 중 (본 저장소) |
-| **B** | 컬렉션 / shard 오케스트레이션 | `QdrantCollection` | 선언적 컬렉션 + auto-rebalance(관측 → 계획 → `move_shard`) + alias re-shard + 안전한 scale-in drain | A | 예정 |
+| **A** | 오퍼레이터 기반 + 프로비저닝 | `QdrantCluster` | scaffold · 컨트롤러 · RBAC + 선언적 분산 클러스터 기동 | — | **완료** |
+| **B** | 컬렉션 / shard 오케스트레이션 | `QdrantCollection` | 선언적 컬렉션 + auto-rebalance(관측 → 계획 → `move_shard`) + 복제 계수 수리 + alias re-shard + 안전한 scale-in drain | A | **완료** |
 | **C** | 데이터 보호 | `QdrantBackup` / `QdrantRestore` | snapshot API 스케줄 백업 · 오브젝트 스토리지 · 복원 | A | 예정 |
 | **D** | Day-2 / 업그레이드 | (status / webhook) | Raft-aware 무중단 롤링 업그레이드 · health gate · observability · TLS | A | 예정 |
-| **E** | 오토스케일링 통합 | `QdrantAutoscaler` | 스케일 트리거 → Phase B의 rebalance 머신에 연결 | B | 예정 |
+| **E** | 오토스케일링 통합 | (`/scale` subresource) | 스케일 트리거 → Phase B의 rebalance 머신에 연결 | B | **완료** — `QdrantCluster`를 KEDA·HPA가 직접 스케일한다. 전용 CRD는 불필요했다 |
 
-의존 그래프: `A → {B, C, D}`는 병렬 진행 가능하고, `E`는 `B` 완료가 필요하다. Phase B가 이 프로젝트의 핵심 가치(shard 재배치 자동화)이지만, 오퍼레이터가 클러스터를 소유하는 Phase A가 반드시 선행해야 한다.
+의존 그래프: `A → {B, C, D}`는 병렬 진행 가능하고, `E`는 `B` 완료가 필요하다. Phase B가 이 프로젝트의 핵심 가치(shard 재배치 자동화)다.
+
+Phase E는 `QdrantAutoscaler` CRD가 아니라 `/scale` subresource로 착지했다. KEDA는 `/scale`을 노출하는 custom resource라면 무엇이든 스케일할 수 있어, 별도 오토스케일러는 재발명이 된다. KEDA가 결정하고 오퍼레이터가 실행한다.
 
 ## API
 
 - Group / Version: `qdrant.keiailab.com/v1alpha1`
-- Kind: `QdrantCluster` (Phase A), `QdrantCollection` (Phase B, 스캐폴딩됨)
+- Kind: `QdrantCluster`, `QdrantCollection`
 - Domain: `keiailab.com` (`kubebuilder init --domain keiailab.com --group qdrant`)
 
 API는 `v1alpha1`이며, stable 릴리스 이전까지 변경될 수 있다.
@@ -158,12 +199,12 @@ API는 `v1alpha1`이며, stable 릴리스 이전까지 변경될 수 있다.
 
 ## 릴리스
 
-메인테이너는 GitHub 태그 · 내부 컨테이너 이미지 · ghcr 컨테이너 이미지 · ghcr OCI chart · 중앙 카탈로그 다섯 채널에 단일 명령으로 동시 발행한다 — 수동 절차는 하나를 빠뜨리기 쉽기 때문이다.
+메인테이너는 GitHub 태그 · ghcr 컨테이너 이미지 · ghcr OCI chart · 중앙 카탈로그 네 채널에 단일 명령으로 동시 발행한다 — 수동 절차는 하나를 빠뜨리기 쉽기 때문이다.
 
 ```bash
-make release VERSION=0.7.0     # 게이트 → 태그 → 이미지 → chart → 카탈로그 → 검증
-DRY_RUN=1 hack/release.sh 0.7.0  # 발행 없이 전체 단계만 출력
-make verify-publish            # 현재 상태의 5채널 일치 여부 검사
+make release VERSION=0.9.0     # 게이트 → 태그 → 이미지 → chart → 카탈로그 → 검증
+DRY_RUN=1 hack/release.sh 0.9.0  # 발행 없이 전체 단계만 출력
+make verify-publish            # 현재 상태의 4채널 일치 여부 검사
 ```
 
 릴리스 게이트는 `test` · `lint` · `publish-scan`을 먼저 통과시키고 `verify-publish`로
