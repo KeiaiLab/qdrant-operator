@@ -10,6 +10,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,6 +104,15 @@ var _ = BeforeSuite(func() {
 		QdrantClientFor: func(*qdrantv1alpha1.QdrantCluster) qdrant.Client { return fakeQdrant },
 	}).SetupWithManager(mgr)).To(Succeed())
 
+	// 백업만 peer 별 Fake 를 쓴다. 스냅샷은 노드 단위라 공유 Fake 로는 그 성질이 사라지고,
+	// "peer 0 에만 있는 스냅샷" 같은 실제 상태를 시나리오가 만들 수 없다.
+	Expect((&QdrantBackupReconciler{
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		QdrantClientFor:     func(*qdrantv1alpha1.QdrantCluster) qdrant.Client { return fakeQdrant },
+		QdrantClientForPeer: func(_ *qdrantv1alpha1.QdrantCluster, ordinal int32) qdrant.Client { return peerFake(ordinal) },
+	}).SetupWithManager(mgr)).To(Succeed())
+
 	go func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed(), "매니저 기동 실패")
@@ -138,4 +148,23 @@ func getFirstFoundEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+// ── 백업 시나리오용 peer 별 Fake ──
+
+var (
+	peerFakesMu sync.Mutex
+	peerFakes   = map[int32]*qdrant.Fake{}
+)
+
+// peerFake 는 서수별 Fake 를 하나씩 만들어 준다(없으면 생성).
+func peerFake(ordinal int32) *qdrant.Fake {
+	peerFakesMu.Lock()
+	defer peerFakesMu.Unlock()
+	f, ok := peerFakes[ordinal]
+	if !ok {
+		f = qdrant.NewFake()
+		peerFakes[ordinal] = f
+	}
+	return f
 }

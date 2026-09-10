@@ -109,11 +109,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 ##@ Build
 
 .PHONY: verify-publish
-verify-publish: ## OSS 발행 5채널(GitHub 태그/이미지/ghcr 이미지/ghcr chart/카탈로그) 일치 검증
+verify-publish: ## OSS 발행 4채널(GitHub 태그/ghcr 이미지/ghcr chart/카탈로그) 일치 검증
 	bash hack/verify-publish.sh
 
 .PHONY: release
-release: ## OSS 릴리스 단일 진입점 — 게이트부터 5채널 발행까지 (사용: make release VERSION=0.7.0)
+release: ## OSS 릴리스 단일 진입점 — 게이트부터 4채널 발행까지 (사용: make release VERSION=0.10.0)
 	@test -n "$(VERSION)" || (echo "사용: make release VERSION=0.7.0" >&2; exit 1)
 	bash hack/release.sh $(VERSION)
 
@@ -257,3 +257,11 @@ publish-scan: ## 공개 적합성 스캔 — push 전 내부 참조/평가성 �
 .PHONY: doc-drift
 doc-drift: ## 문서-구현 괴리 검사 — 구현된 Kind 를 README 가 "예정" 이라 말하는지 (릴리스 게이트)
 	bash hack/doc-drift-check.sh
+
+.PHONY: chart-crds
+chart-crds: manifests ## 차트 CRD 번들을 controller-gen 산출물에서 재생성
+	bash hack/sync-chart-crds.sh
+
+.PHONY: chart-crds-check
+chart-crds-check: ## 차트 CRD 가 생성물과 어긋나면 실패 (CI · 릴리스 게이트)
+	bash hack/sync-chart-crds.sh --check

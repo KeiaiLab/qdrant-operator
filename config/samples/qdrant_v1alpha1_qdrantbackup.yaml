@@ -1,0 +1,14 @@
+apiVersion: qdrant.keiailab.com/v1alpha1
+kind: QdrantBackup
+metadata:
+  name: nightly
+  namespace: data
+spec:
+  clusterRef: my-qdrant
+  # 비우면 클러스터의 전 컬렉션 — 새 컬렉션이 생겨도 이 파일을 고치지 않아도 된다.
+  collections: []
+  # 5필드 cron. 비우면 1회성으로 한 번만 돈다.
+  schedule: "0 3 * * *"
+  retention:
+    # (컬렉션, peer) 짝마다 남길 스냅샷 수. 생략하면 아무것도 지우지 않는다.
+    keepLast: 7

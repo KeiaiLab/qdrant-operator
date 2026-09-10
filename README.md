@@ -176,7 +176,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | Operator foundation + provisioning | `QdrantCluster` | scaffold · controller · RBAC + declarative distributed cluster bring-up | — | **Done** |
 | **B** | Collection / shard orchestration | `QdrantCollection` | declarative collections + auto-rebalance (observe → plan → `move_shard`) + replication-factor repair + alias re-shard + safe scale-in drain | A | **Done** |
-| **C** | Data protection | `QdrantBackup` / `QdrantRestore` | scheduled snapshot-API backups · object storage · restore | A | Planned |
+| **C** | Data protection | `QdrantBackup` | scheduled snapshot-API backups across every peer · S3 object storage · retention | A | **Backup done**, restore in progress |
 | **D** | Day-2 / upgrades | (status / webhook) | Raft-aware zero-downtime rolling upgrades · health gate · observability · TLS | A | Planned |
 | **E** | Autoscaling integration | (`/scale` subresource) | scale triggers → wired into the Phase B rebalance machine | B | **Done** — `QdrantCluster` is directly scalable by KEDA or an HPA; no dedicated CRD was needed |
 

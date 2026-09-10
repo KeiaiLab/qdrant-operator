@@ -93,11 +93,11 @@ type S3StorageSpec struct {
 	// +kubebuilder:default="us-east-1"
 	// +optional
 	Region string `json:"region,omitempty"`
-	// EndpointURL 은 path-style 엔드포인트다. 사내 Ceph RGW 면
+	// EndpointURL 은 path-style 엔드포인트다. 클러스터 안의 Ceph RGW 라면
 	// http://rook-ceph-rgw-<store>.rook-ceph.svc:80 형태.
 	//
-	// 주의: NetworkPolicy/CNP 는 서비스 포트가 아니라 **DNAT 된 파드 포트**로 써야 한다
-	// (keiailab RGW 는 80 → 8080). 틀리면 403 이 아니라 조용한 타임아웃으로 나타난다.
+	// 주의: NetworkPolicy 는 서비스 포트가 아니라 **DNAT 된 파드 포트**로 써야 한다
+	// (RGW 는 보통 80 → 8080). 틀리면 403 이 아니라 조용한 타임아웃으로 나타난다.
 	EndpointURL string `json:"endpointURL"`
 	// Credentials 는 access/secret key 를 담은 Secret 이다. ObjectBucketClaim 이 만든
 	// Secret 이면 기본 키 이름이 그대로 맞는다.

@@ -176,7 +176,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | 오퍼레이터 기반 + 프로비저닝 | `QdrantCluster` | scaffold · 컨트롤러 · RBAC + 선언적 분산 클러스터 기동 | — | **완료** |
 | **B** | 컬렉션 / shard 오케스트레이션 | `QdrantCollection` | 선언적 컬렉션 + auto-rebalance(관측 → 계획 → `move_shard`) + 복제 계수 수리 + alias re-shard + 안전한 scale-in drain | A | **완료** |
-| **C** | 데이터 보호 | `QdrantBackup` / `QdrantRestore` | snapshot API 스케줄 백업 · 오브젝트 스토리지 · 복원 | A | 예정 |
+| **C** | 데이터 보호 | `QdrantBackup` | 전 peer snapshot API 스케줄 백업 · S3 오브젝트 스토리지 · 보존기간 | A | **백업 완료**, 복원 진행 중 |
 | **D** | Day-2 / 업그레이드 | (status / webhook) | Raft-aware 무중단 롤링 업그레이드 · health gate · observability · TLS | A | 예정 |
 | **E** | 오토스케일링 통합 | (`/scale` subresource) | 스케일 트리거 → Phase B의 rebalance 머신에 연결 | B | **완료** — `QdrantCluster`를 KEDA·HPA가 직접 스케일한다. 전용 CRD는 불필요했다 |
 

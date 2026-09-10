@@ -176,7 +176,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | Operator 基础 + 预置 | `QdrantCluster` | scaffold、controller、RBAC + 声明式分布式集群启动 | — | **已完成** |
 | **B** | 集合(Collection)/ shard 编排 | `QdrantCollection` | 声明式集合 + auto-rebalance(观测 → 规划 → `move_shard`)+ 复制因子修复 + alias re-shard + 安全的 scale-in drain | A | **已完成** |
-| **C** | 数据保护 | `QdrantBackup` / `QdrantRestore` | 基于 snapshot API 的定时备份、对象存储、恢复 | A | 计划中 |
+| **C** | 数据保护 | `QdrantBackup` | 全 peer 的 snapshot API 定时备份、S3 对象存储、保留策略 | A | **备份已完成**,恢复进行中 |
 | **D** | Day-2 / 升级 | (status / webhook) | 支持 Raft 感知的零停机滚动升级、health gate、可观测性(observability)、TLS | A | 计划中 |
 | **E** | 自动扩缩容集成 | (`/scale` subresource) | 扩缩容触发器 → 接入 Phase B 的 rebalance 机制 | B | **已完成** —— KEDA 或 HPA 可直接扩缩 `QdrantCluster`,无需专用 CRD |
 

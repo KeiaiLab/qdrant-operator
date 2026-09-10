@@ -176,7 +176,7 @@ kubectl get qdrantcluster my-qdrant -n data -o jsonpath='{.status.phase}'
 |---|---|---|---|---|---|
 | **A** | オペレーター基盤 + プロビジョニング | `QdrantCluster` | scaffold・controller・RBAC + 宣言的な分散クラスター起動 | — | **完了** |
 | **B** | コレクション / shard オーケストレーション | `QdrantCollection` | 宣言的コレクション + auto-rebalance(観測 → 計画 → `move_shard`)+ 複製係数の修復 + alias re-shard + 安全な scale-in drain | A | **完了** |
-| **C** | データ保護 | `QdrantBackup` / `QdrantRestore` | snapshot API によるスケジュールバックアップ・オブジェクトストレージ・リストア | A | 計画中 |
+| **C** | データ保護 | `QdrantBackup` | 全 peer の snapshot API スケジュールバックアップ・S3 オブジェクトストレージ・保持期間 | A | **バックアップ完了**、リストアは進行中 |
 | **D** | Day-2 / アップグレード | (status / webhook) | Raft-aware な無停止ローリングアップグレード・health gate・observability・TLS | A | 計画中 |
 | **E** | オートスケーリング統合 | (`/scale` subresource) | スケールトリガー → Phase B の rebalance 機構に接続 | B | **完了** — `QdrantCluster` を KEDA や HPA が直接スケールします。専用 CRD は不要でした |
 

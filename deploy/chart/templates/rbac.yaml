@@ -70,6 +70,7 @@ rules:
   resources:
   - qdrantclusters
   - qdrantcollections
+  - qdrantbackups
   verbs:
   - create
   - delete
@@ -83,6 +84,7 @@ rules:
   resources:
   - qdrantclusters/status
   - qdrantcollections/status
+  - qdrantbackups/status
   verbs:
   - get
   - patch
@@ -91,6 +93,7 @@ rules:
   - qdrant.keiailab.com
   resources:
   - qdrantcollections/finalizers
+  - qdrantbackups/finalizers
   verbs:
   - update
 

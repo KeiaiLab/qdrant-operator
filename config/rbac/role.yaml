@@ -62,6 +62,7 @@ rules:
 - apiGroups:
   - qdrant.keiailab.com
   resources:
+  - qdrantbackups
   - qdrantclusters
   - qdrantcollections
   verbs:
@@ -75,15 +76,17 @@ rules:
 - apiGroups:
   - qdrant.keiailab.com
   resources:
+  - qdrantbackups/finalizers
+  - qdrantcollections/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - qdrant.keiailab.com
+  resources:
+  - qdrantbackups/status
   - qdrantclusters/status
   - qdrantcollections/status
   verbs:
   - get
   - patch
-  - update
-- apiGroups:
-  - qdrant.keiailab.com
-  resources:
-  - qdrantcollections/finalizers
-  verbs:
   - update

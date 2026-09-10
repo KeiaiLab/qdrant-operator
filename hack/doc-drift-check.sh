@@ -56,11 +56,13 @@ if [[ -n "$channels" ]]; then
 			continue # 정본과 같은 표기는 검사 대상이 아니다
 		fi
 
-		for readme in README.md README.*.md; do
-			hits="$(grep -nEi "$words" "$readme" || true)"
+		# README 만 보면 놓친다 — Makefile 의 타깃 설명에도 채널 수가 적혀 있고
+		# 실제로 거기서 4채널 전환을 놓쳤다(2026-09-10).
+		for doc in README.md README.*.md Makefile; do
+			hits="$(grep -nEi "$words" "$doc" || true)"
 			[[ -n "$hits" ]] || continue
 
-			echo "✗ $readme: 채널 수 ${n} 로 표기 — release.sh 는 ${channels}채널이다" >&2
+			echo "✗ $doc: 채널 수 ${n} 로 표기 — release.sh 는 ${channels}채널이다" >&2
 			printf '%s\n' "$hits" | sed 's/^/    /' >&2
 			fail=1
 		done

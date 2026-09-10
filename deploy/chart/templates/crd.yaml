@@ -4,6 +4,254 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
+  name: qdrantbackups.qdrant.keiailab.com
+spec:
+  group: qdrant.keiailab.com
+  names:
+    kind: QdrantBackup
+    listKind: QdrantBackupList
+    plural: qdrantbackups
+    singular: qdrantbackup
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterRef
+      name: Cluster
+      type: string
+    - jsonPath: .spec.schedule
+      name: Schedule
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.lastSuccessTime
+      name: Last
+      type: date
+    - jsonPath: .status.nextScheduleTime
+      name: Next
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: QdrantBackup is the Schema for the qdrantbackups API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of QdrantBackup
+            properties:
+              clusterRef:
+                description: ClusterRef 는 같은 네임스페이스의 QdrantCluster 이름이다.
+                type: string
+              collections:
+                description: |-
+                  Collections 는 백업 대상이다. 비면 클러스터의 전 컬렉션 — 새 컬렉션이 생겨도
+                  백업 선언을 고치지 않아도 되는 쪽이 기본이다.
+                items:
+                  type: string
+                type: array
+              retention:
+                description: |-
+                  Retention 미지정이면 아무것도 지우지 않는다. 백업을 지우는 것은 파괴 동작이라
+                  명시적 선언 없이는 하지 않는다.
+                properties:
+                  keepLast:
+                    description: KeepLast 는 최신 몇 개를 남길지다. 0 은 "정리 안 함"이며, 이것이 미지정과
+                      같은 뜻이다.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              schedule:
+                description: 'Schedule 은 5필드 cron 이다(예: "0 3 * * *"). 비면 1회성 — 한 번
+                  돌고 Ready 에 머문다.'
+                type: string
+              suspend:
+                description: |-
+                  Suspend 는 예약 실행만 멈춘다. 진행 중인 세대는 끝까지 간다 —
+                  중간에 끊긴 백업은 없느니만 못하다.
+                type: boolean
+            required:
+            - clusterRef
+            type: object
+          status:
+            description: status defines the observed state of QdrantBackup
+            properties:
+              active:
+                description: |-
+                  Active 는 발행 중인 스냅샷 1건 — 동시 1건 lane 이다. 스냅샷은 디스크·네트워크를
+                  크게 쓰므로 동시 다발은 서비스에 해롭다(이동/복제와 같은 규율).
+                properties:
+                  collection:
+                    type: string
+                  issuedAt:
+                    description: IssuedAt 이 있으면 발행 완료 — 관측으로 완료를 기다리는 중이다.
+                    format: date-time
+                    type: string
+                  known:
+                    description: |-
+                      Known 은 발행 직전에 관측한 스냅샷 이름들이다. 새로 나타난 이름을 가려내는 기준이며,
+                      이것이 없으면 남이 만든 스냅샷을 자기 것으로 착각한다.
+                    items:
+                      type: string
+                    type: array
+                  peer:
+                    format: int32
+                    type: integer
+                required:
+                - collection
+                - peer
+                type: object
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastSuccessTime:
+                format: date-time
+                type: string
+              nextScheduleTime:
+                description: NextScheduleTime 은 다음 실행 예정 시각 — 예약이 살아 있는지 status 만
+                  보고 안다.
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              pending:
+                description: |-
+                  Pending 은 이번 세대의 남은 작업이다. 여기 있기 때문에 오퍼레이터가 재기동해도
+                  세대가 중간에서 이어진다.
+                items:
+                  description: PendingSnapshot 은 아직 발행하지 않았거나 완료를 기다리는 작업 하나다.
+                  properties:
+                    collection:
+                      type: string
+                    issuedAt:
+                      description: IssuedAt 이 있으면 발행 완료 — 관측으로 완료를 기다리는 중이다.
+                      format: date-time
+                      type: string
+                    known:
+                      description: |-
+                        Known 은 발행 직전에 관측한 스냅샷 이름들이다. 새로 나타난 이름을 가려내는 기준이며,
+                        이것이 없으면 남이 만든 스냅샷을 자기 것으로 착각한다.
+                      items:
+                        type: string
+                      type: array
+                    peer:
+                      format: int32
+                      type: integer
+                  required:
+                  - collection
+                  - peer
+                  type: object
+                type: array
+              phase:
+                type: string
+              snapshots:
+                description: Snapshots 는 마지막으로 성공한 세대의 산출물이다.
+                items:
+                  description: SnapshotRef 는 만들어진 스냅샷 하나의 좌표다.
+                  properties:
+                    collection:
+                      type: string
+                    createdAt:
+                      type: string
+                    name:
+                      type: string
+                    peer:
+                      description: Peer 는 STS 서수다 — 스냅샷은 그 peer 에만 존재한다.
+                      format: int32
+                      type: integer
+                  required:
+                  - collection
+                  - name
+                  - peer
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: qdrantclusters.qdrant.keiailab.com
 spec:
   group: qdrant.keiailab.com
@@ -1124,6 +1372,57 @@ spec:
                 default: ClusterIP
                 description: Service Type string describes ingress methods for a service
                 type: string
+              snapshots:
+                description: Snapshots 는 스냅샷 보관 위치 — 미지정이면 qdrant 기본(각 peer PVC)이다.
+                properties:
+                  s3:
+                    description: S3 는 Storage=S3 일 때만 읽는다.
+                    properties:
+                      bucket:
+                        type: string
+                      credentials:
+                        description: |-
+                          Credentials 는 access/secret key 를 담은 Secret 이다. ObjectBucketClaim 이 만든
+                          Secret 이면 기본 키 이름이 그대로 맞는다.
+                        properties:
+                          accessKeyKey:
+                            default: AWS_ACCESS_KEY_ID
+                            type: string
+                          name:
+                            type: string
+                          secretKeyKey:
+                            default: AWS_SECRET_ACCESS_KEY
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      endpointURL:
+                        description: |-
+                          EndpointURL 은 path-style 엔드포인트다. 클러스터 안의 Ceph RGW 라면
+                          http://rook-ceph-rgw-<store>.rook-ceph.svc:80 형태.
+
+                          주의: NetworkPolicy 는 서비스 포트가 아니라 **DNAT 된 파드 포트**로 써야 한다
+                          (RGW 는 보통 80 → 8080). 틀리면 403 이 아니라 조용한 타임아웃으로 나타난다.
+                        type: string
+                      region:
+                        default: us-east-1
+                        description: Region 은 RGW 처럼 리전을 강제하지 않는 구현에서도 서명에 필요하다.
+                        type: string
+                    required:
+                    - bucket
+                    - credentials
+                    - endpointURL
+                    type: object
+                  storage:
+                    default: Local
+                    description: "SnapshotStorage 는 스냅샷이 어디에 쌓이는지다.\n\n\tLocal — 각
+                      peer 의 PVC. 노드/볼륨이 죽으면 스냅샷도 함께 죽는다.\n\tS3    — qdrant 가 오브젝트
+                      스토리지에 직접 쓴다. 오퍼레이터는 바이트를 만지지 않는다."
+                    enum:
+                    - Local
+                    - S3
+                    type: string
+                type: object
               tolerations:
                 items:
                   description: |-
