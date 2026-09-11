@@ -4,27 +4,17 @@ description: A Kubernetes Operator for the Qdrant vector database — declarativ
 # 차트 타입: 오퍼레이터(컨트롤러 매니저) 워크로드
 type: application
 # 차트 버전 (SemVer 2) — 차트 자체의 릴리스 버전
-version: 0.10.0
+version: 0.10.1
 # 오퍼레이터(컨테이너 이미지)의 버전 — image.tag 미지정 시 기본값으로 사용
-appVersion: "v0.10.0"
+appVersion: "v0.10.1"
 kubeVersion: ">=1.29.0-0"
 annotations:
   artifacthub.io/category: database
   artifacthub.io/license: MIT
   artifacthub.io/operator: "true"
   artifacthub.io/changes: |
-    - kind: added
-      description: "QdrantBackup: scheduled snapshot backups fanned out across every peer, with cron scheduling and retention."
-    - kind: added
-      description: "QdrantRestore: restore a collection from a backup generation, one recovery per peer."
-    - kind: added
-      description: "spec.snapshots points snapshot storage at S3-compatible object storage; Qdrant writes there itself."
-    - kind: added
-      description: "Raft-aware rolling upgrades: the rollout advances only once the restarted peer rejoins consensus and every shard is Active."
-    - kind: added
-      description: "Prometheus metrics and alert rules for backups, dead replicas, rebalance convergence and gated rollouts."
-    - kind: added
-      description: "TLS: config.tls.secretName supplies the certificates the tlsEnabled switch always required; the operator connects over HTTPS verifying against the same CA."
+    - kind: fixed
+      description: "Snapshot creation issued with wait=false is accepted again: Qdrant answers 202 Accepted and the client treated anything but 200 as a failure, so every backup ended in Degraded(SnapshotFailed)."
 keywords:
   - qdrant
   - operator

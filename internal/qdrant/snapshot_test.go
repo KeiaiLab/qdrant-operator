@@ -103,3 +103,33 @@ func TestFakeSnapshot_왕복(t *testing.T) {
 		t.Fatal("없는 컬렉션 스냅샷이 성공했다")
 	}
 }
+
+// qdrant 는 wait=false 발행에 **202 Accepted** 로 답한다 — 수락이지 실패가 아니다.
+// 실측(2026-09-11 00:55Z 라이브): 202 를 실패로 판정해 QdrantBackup 이
+// Degraded(SnapshotFailed) 로 떨어졌고 백업이 한 번도 성공하지 못했다.
+func TestCreateSnapshot_202수락(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"status":"accepted","result":null}`))
+	}))
+	defer srv.Close()
+
+	if err := NewHTTPClient(srv.URL).CreateSnapshot(context.Background(), "vec"); err != nil {
+		t.Fatalf("202 Accepted 를 실패로 판정: %v", err)
+	}
+}
+
+// 넓힌 것은 2xx 까지지 판정 자체가 아니다 — 오류 응답은 여전히 실패여야 한다.
+func TestCreateSnapshot_오류응답(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"status":{"error":"disk full"}}`))
+	}))
+	defer srv.Close()
+
+	if err := NewHTTPClient(srv.URL).CreateSnapshot(context.Background(), "vec"); err == nil {
+		t.Fatal("500 응답을 성공으로 판정")
+	}
+}

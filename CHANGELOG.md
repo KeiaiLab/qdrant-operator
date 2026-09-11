@@ -10,6 +10,23 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-11
+
+### Fixed
+
+- Backups could never succeed. Snapshot creation is issued with `wait=false`
+  because a large collection takes far longer than any sane HTTP timeout, and
+  Qdrant answers such a request with **202 Accepted** — the client accepted
+  only 200, so every issue was recorded as a failure. Observed 2026-09-11
+  00:55Z on the first `QdrantBackup` of a live cluster: `phase=Degraded`,
+  `SnapshotFailed`, `POST /collections/<collection>/snapshots?wait=false: 202
+  Accepted: {"status":"accepted"…}`. The generation was dropped at the first
+  issue, so no backup generation ever completed and nothing downstream that
+  requires one could proceed. Acceptance for the `wait=false` issue is now any
+  2xx; every other call keeps the 200-only rule, and a non-2xx snapshot issue
+  still fails. Completion is still decided by observing the snapshot list —
+  the issue response carries no name.
+
 ## [0.10.0] - 2026-09-10
 
 ### Fixed

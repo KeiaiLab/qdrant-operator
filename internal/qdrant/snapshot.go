@@ -33,9 +33,12 @@ type SnapshotInfo struct {
 // 명시적으로 경고하는 지점이다). 그래서 이 계층은 이동/복제와 같은 규율을 따른다 —
 // 발행하고, 완료는 ListSnapshots 관측으로 판정한다. 새 스냅샷의 이름도 그 관측에서 온다
 // (wait=false 응답에는 이름이 없다).
+//
+// 수락 응답은 202 Accepted 다 — 200 만 성공으로 보면 정상 발행이 전부 실패가 된다
+// (2026-09-11 실측: 라이브 백업이 그 판정으로 Degraded(SnapshotFailed) 였다).
 func (c *HTTPClient) CreateSnapshot(ctx context.Context, collection string) error {
 	path := "/collections/" + url.PathEscape(collection) + "/snapshots?wait=false"
-	return c.doJSON(ctx, "POST", path, nil, nil)
+	return c.doJSONAccept(ctx, "POST", path, nil, nil, acceptAny2xx)
 }
 
 // ListSnapshots 는 이 peer 가 보관 중인 컬렉션 스냅샷 목록이다.

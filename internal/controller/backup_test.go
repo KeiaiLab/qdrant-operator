@@ -8,10 +8,20 @@ package controller
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/events"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	qdrantv1alpha1 "github.com/keiailab/qdrant-operator/api/v1alpha1"
 	"github.com/keiailab/qdrant-operator/internal/qdrant"
@@ -133,5 +143,91 @@ func TestOneShot_한번만(t *testing.T) {
 	bk.Status.LastSuccessTime = &ran
 	if oneShotDue(bk) {
 		t.Fatal("1회성이 두 번 발동")
+	}
+}
+
+// snapshotServer 는 실물 qdrant 의 wait=false 응답 순서를 그대로 흉내내는 대역이다 —
+// POST 는 202 Accepted 로 수락만 하고, 이름은 그 뒤 목록 관측에서야 나타난다.
+func snapshotServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	var mu sync.Mutex
+	issued := false
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodPost {
+			issued = true
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"status":"accepted","result":null}`))
+			return
+		}
+
+		if !issued {
+			_, _ = w.Write([]byte(`{"result":[],"status":"ok"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"result":[{"name":"vec-2026-09-11.snapshot","creation_time":"2026-09-11T00:55:00","size":1}],"status":"ok"}`))
+	}))
+}
+
+// 202 Accepted 발행 → 목록 관측 → 세대 마감까지 실 HTTP 클라이언트로 통과해야 한다.
+// 실측(2026-09-11 00:55Z 라이브): 202 를 실패로 판정해 Degraded(SnapshotFailed) 로
+// 떨어졌고 백업 성공 1건이 성립하지 못했다.
+func TestBackup_202발행부터마감까지(t *testing.T) {
+	srv := snapshotServer(t)
+	defer srv.Close()
+
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := qdrantv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+
+	cluster := &qdrantv1alpha1.QdrantCluster{ObjectMeta: metav1.ObjectMeta{Name: "qc", Namespace: "data"}}
+	cluster.Spec.Replicas = 1
+	bk := &qdrantv1alpha1.QdrantBackup{ObjectMeta: metav1.ObjectMeta{Name: "nightly", Namespace: "data"}}
+	bk.Spec.ClusterRef = "qc"
+	bk.Spec.Collections = []string{"vec"}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cluster, bk).WithStatusSubresource(bk).Build()
+	qcl := qdrant.NewHTTPClient(srv.URL)
+	r := &QdrantBackupReconciler{
+		Client: c, Scheme: s, Recorder: events.NewFakeRecorder(20),
+		QdrantClientFor:     func(*qdrantv1alpha1.QdrantCluster) qdrant.Client { return qcl },
+		QdrantClientForPeer: func(*qdrantv1alpha1.QdrantCluster, int32) qdrant.Client { return qcl },
+	}
+
+	// 세대 열기 → 발행 → 정산 → 마감. 걸음마다 status 를 쓰므로 재진입으로 전진한다.
+	key := types.NamespacedName{Name: "nightly", Namespace: "data"}
+	for range 4 {
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := &qdrantv1alpha1.QdrantBackup{}
+	if err := c.Get(t.Context(), key, got); err != nil {
+		t.Fatal(err)
+	}
+	if d := meta.FindStatusCondition(got.Status.Conditions, condDegraded); d != nil && d.Status == metav1.ConditionTrue {
+		t.Fatalf("발행이 실패로 판정됨: %s: %s", d.Reason, d.Message)
+	}
+	if got.Status.Phase != phaseBackupReady || len(got.Status.Snapshots) != 1 {
+		t.Fatalf("phase=%s 스냅샷=%+v", got.Status.Phase, got.Status.Snapshots)
+	}
+
+	// 이름은 발행 응답이 아니라 관측에서 온다.
+	if name := got.Status.Snapshots[0].Name; name != "vec-2026-09-11.snapshot" {
+		t.Fatalf("스냅샷 이름=%q", name)
+	}
+	if got.Status.LastSuccessTime == nil {
+		t.Fatal("세대가 마감되지 않음")
 	}
 }

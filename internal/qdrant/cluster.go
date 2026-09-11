@@ -81,7 +81,27 @@ type AliasAction struct {
 // ── envelope 공통 처리 ──
 // 모든 qdrant REST 응답 = {"result": <payload>, "status": "ok"|<err>, "time": <float>}.
 
+// acceptPolicy 는 응답 코드 판정 방식이다. 동기 호출은 200 만 성공이지만 wait=false
+// 발행은 qdrant 가 202 Accepted 로 수락만 하고 돌려준다 — 그것도 성공이다.
+type acceptPolicy int
+
+const (
+	acceptOKOnly acceptPolicy = iota
+	acceptAny2xx
+)
+
+func (p acceptPolicy) ok(code int) bool {
+	if p == acceptAny2xx {
+		return code >= http.StatusOK && code < http.StatusMultipleChoices
+	}
+	return code == http.StatusOK
+}
+
 func (c *HTTPClient) doJSON(ctx context.Context, method, path string, reqBody any, result any) error {
+	return c.doJSONAccept(ctx, method, path, reqBody, result, acceptOKOnly)
+}
+
+func (c *HTTPClient) doJSONAccept(ctx context.Context, method, path string, reqBody any, result any, accept acceptPolicy) error {
 	var rd io.Reader
 	if reqBody != nil {
 		buf, err := json.Marshal(reqBody)
@@ -102,7 +122,7 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, reqBody an
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	if !accept.ok(resp.StatusCode) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, string(b))
 	}
