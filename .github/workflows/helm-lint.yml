@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
         with:
-          version: latest
+          version: v4.3.0
       - uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
       - name: Run ct lint
         run: ct lint --target-branch=main --charts deploy/chart
@@ -33,7 +33,7 @@ jobs:
         # bash quoting via `run:` resolves the escaping cleanly.
         run: |
           docker run --rm -v "$PWD":/workdir -w /workdir \
-            ghcr.io/yannh/kubeconform:latest \
+            ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e \
             -strict -ignore-missing-schemas \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
