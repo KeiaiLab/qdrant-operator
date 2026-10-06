@@ -4,17 +4,21 @@ description: A Kubernetes Operator for the Qdrant vector database — declarativ
 # 차트 타입: 오퍼레이터(컨트롤러 매니저) 워크로드
 type: application
 # 차트 버전 (SemVer 2) — 차트 자체의 릴리스 버전
-version: 0.10.1
+version: 0.10.2
 # 오퍼레이터(컨테이너 이미지)의 버전 — image.tag 미지정 시 기본값으로 사용
-appVersion: "v0.10.1"
+appVersion: "v0.10.2"
 kubeVersion: ">=1.29.0-0"
 annotations:
   artifacthub.io/category: database
   artifacthub.io/license: MIT
   artifacthub.io/operator: "true"
   artifacthub.io/changes: |
-    - kind: fixed
-      description: "Snapshot creation issued with wait=false is accepted again: Qdrant answers 202 Accepted and the client treated anything but 200 as a failure, so every backup ended in Degraded(SnapshotFailed)."
+    - kind: security
+      description: "grpc v1.83.2 fixes CVE-2026-84304, CVE-2026-84445 (high) and CVE-2026-84303; otel v1.45.0 fixes CVE-2026-81870."
+    - kind: security
+      description: "Operator image base layers are pinned by digest (golang 1.26.8, distroless static nonroot)."
+    - kind: changed
+      description: "QdrantCluster spec.image.tag defaults to Qdrant v1.19.2 (was v1.18.2)."
 keywords:
   - qdrant
   - operator

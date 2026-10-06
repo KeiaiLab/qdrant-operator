@@ -10,6 +10,23 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-06
+
+### Security
+
+- grpc v1.82.1 carried CVE-2026-84304 and CVE-2026-84445 (high) and
+  CVE-2026-84303. It moves to v1.83.2 rather than v1.84.0, which the Go vuln
+  DB still lists as affected by GO-2026-6443. otel moves to v1.45.0 for
+  CVE-2026-81870.
+- The operator image base layers were floating tags; `golang:1.26.8` and
+  `distroless/static:nonroot` are now pinned by digest.
+
+### Changed
+
+- `QdrantCluster` `spec.image.tag` defaults to Qdrant **v1.19.2** (was
+  v1.18.2). Existing clusters keep the tag stored in their spec. The REST
+  client was exercised against v1.19.2 in cluster mode before the switch.
+
 ## [0.10.1] - 2026-09-11
 
 ### Fixed
