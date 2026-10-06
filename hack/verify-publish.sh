@@ -23,6 +23,16 @@ ghcr_image="${GHCR_IMAGE:-keiailab/${chart_name}}"
 catalog_index="${CATALOG_INDEX:-https://keiailab.github.io/charts/index.yaml}"
 
 fail=0
+
+# ghcr 익명 pull 토큰. 응답은 변수에 받은 뒤 파싱한다 — curl 을 인터프리터로
+# 직접 파이프하면 Scorecard 가 download-then-run 으로 판정한다.
+anon_token() {
+	local body
+	body="$(curl -fsSL "https://ghcr.io/token?scope=repository:${1}:pull" 2>/dev/null || echo '')"
+	printf '%s' "$body" |
+		python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || echo ''
+}
+
 ok()   { printf '  ✓ %s\n' "$1"; }
 bad()  { printf '  ✗ %s\n' "$1"; fail=1; }
 
@@ -54,8 +64,7 @@ if [[ -n "$latest_tag" && "$latest_tag" != "$app_version" ]]; then
 fi
 
 # 2) ghcr chart (OCI, 익명)
-ghcr_token="$(curl -fsSL "https://ghcr.io/token?scope=repository:${ghcr_chart}:pull" 2>/dev/null |
-	python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || echo '')"
+ghcr_token="$(anon_token "$ghcr_chart")"
 ghcr_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 	-H "Authorization: Bearer ${ghcr_token}" \
 	-H 'Accept: application/vnd.oci.image.manifest.v1+json' \
@@ -64,8 +73,7 @@ ghcr_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 	|| bad "chart ghcr ${version} 익명 조회 실패(HTTP ${ghcr_code}) — helm push 누락 또는 패키지 비공개"
 
 # 2b) ghcr 오퍼레이터 이미지 (values.yaml image.repository 기본값, 익명 pull) — 태그는 v 접두 app_version
-ghcr_img_token="$(curl -fsSL "https://ghcr.io/token?scope=repository:${ghcr_image}:pull" 2>/dev/null |
-	python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || echo '')"
+ghcr_img_token="$(anon_token "$ghcr_image")"
 ghcr_img_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 	-H "Authorization: Bearer ${ghcr_img_token}" \
 	-H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
@@ -74,7 +82,9 @@ ghcr_img_code="$(curl -sS -o /dev/null -w '%{http_code}' \
 	|| bad "이미지 ghcr.io/${ghcr_image}:${app_version} 익명 조회 실패(HTTP ${ghcr_img_code}) — docker push 누락 또는 패키지 비공개"
 
 # 3) 중앙 카탈로그(ArtifactHub 가 크롤하는 index)
-idx_version="$(curl -fsSL "$catalog_index" 2>/dev/null | python3 -c "
+# 내려받은 응답은 데이터로만 다룬다 — 인터프리터로 직접 파이프하지 않는다(Scorecard).
+catalog_yaml="$(curl -fsSL "$catalog_index" 2>/dev/null || echo '')"
+idx_version="$(printf '%s' "$catalog_yaml" | python3 -c "
 import sys,re
 name='${chart_name}'
 cur=None; out=''
