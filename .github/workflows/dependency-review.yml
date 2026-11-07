@@ -50,4 +50,24 @@ jobs:
           # explicitly. Reject GPL-family (copyleft) to keep the binary
           # safe to redistribute as a closed-source operator image.
           allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, Zlib, Unlicense, 0BSD, CC0-1.0
+          # ClearlyDefined reports these as compound expressions the action cannot
+          # evaluate against allow-licenses: golang.org/x/* = "BSD-3-Clause AND
+          # LicenseRef-scancode-google-patent-license-golang" (BSD-3 plus Go's patent
+          # grant), pprof / kube-openapi = "LicenseRef-bad-apache-2.0-*" (one LICENSE
+          # file carrying two permissive texts). All permissive; go-licenses scan
+          # (go-licenses.yml) still checks them. 2026-11-07: this blocked every
+          # go.mod PR, including the x/net CVE fix.
+          allow-dependencies-licenses: >-
+            pkg:golang/golang.org/x/net,
+            pkg:golang/golang.org/x/sys,
+            pkg:golang/golang.org/x/sync,
+            pkg:golang/golang.org/x/term,
+            pkg:golang/golang.org/x/text,
+            pkg:golang/golang.org/x/time,
+            pkg:golang/golang.org/x/tools,
+            pkg:golang/golang.org/x/exp,
+            pkg:golang/golang.org/x/crypto,
+            pkg:golang/golang.org/x/oauth2,
+            pkg:golang/github.com/google/pprof,
+            pkg:golang/k8s.io/kube-openapi
           comment-summary-in-pr: on-failure
