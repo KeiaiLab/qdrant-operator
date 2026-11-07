@@ -68,6 +68,10 @@ type QdrantClusterReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services;configmaps;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // TLS CA 를 읽기 위한 최소 권한 — 읽기만, 그리고 캐시를 거치지 않는 직행 읽기다(tls.go 참조).
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// 네 컨트롤러의 EventRecorder(mgr.GetEventRecorder) 가 쓰는 권한 — events.k8s.io 를 먼저 쓰고
+// core 로 폴백한다. 2026-11-07 실측: 이 규칙이 없어 SnapshotPruned 등 이벤트가 전부 버려졌다.
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

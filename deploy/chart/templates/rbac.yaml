@@ -72,6 +72,14 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - qdrant.keiailab.com
   resources:
   - qdrantclusters
