@@ -238,7 +238,7 @@ metadata:
 spec:
   image:
     repository: qdrant/qdrant   # デフォルト
-    tag: v1.18.2                # デフォルト
+    tag: v1.19.2                # デフォルト
   replicas: 3
   resources:
     requests: { cpu: 250m, memory: 512Mi }

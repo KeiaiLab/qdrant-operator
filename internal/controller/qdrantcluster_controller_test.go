@@ -39,7 +39,7 @@ var _ = Describe("QdrantCluster Controller", func() {
 			fetched := &qdrantv1alpha1.QdrantCluster{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "def", Namespace: "default"}, fetched)).To(Succeed())
 			Expect(fetched.Spec.Replicas).To(Equal(int32(1)))
-			Expect(fetched.Spec.Image.Tag).To(Equal("v1.18.2"))
+			Expect(fetched.Spec.Image.Tag).To(Equal("v1.19.2"))
 			Expect(fetched.Spec.Persistence.StorageClassName).To(Equal("ceph-rbd"))
 			Expect(fetched.Spec.RunAsUser).To(Equal(int64(1000)))
 			Expect(fetched.Spec.Persistence.Size).NotTo(BeNil()) // 리뷰 #1 회귀 가드

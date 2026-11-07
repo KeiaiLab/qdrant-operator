@@ -18,7 +18,7 @@ import (
 type ImageSpec struct {
 	// +kubebuilder:default="qdrant/qdrant"
 	Repository string `json:"repository,omitempty"`
-	// +kubebuilder:default="v1.18.2"
+	// +kubebuilder:default="v1.19.2"
 	Tag string `json:"tag,omitempty"`
 }
 
