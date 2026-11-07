@@ -10,6 +10,27 @@ fix looks the way it does. A one-line subject is not a changelog.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-07
+
+### Fixed
+
+- The operator emitted no Kubernetes Events. Every controller records
+  through `mgr.GetEventRecorder`, but the ClusterRole never granted `events`
+  in any API group, so the API server rejected each one: observed 2026-11-07
+  04:30Z in ns `data`, `Server rejected event (will not retry!)` — SA
+  `data:qdrant-operator-controller-manager` "cannot patch resource events in
+  API group events.k8s.io". Snapshot-pruning events were lost. The role (and
+  the chart's hand-mirrored copy) now grant `create;patch` on `events` in
+  core and `events.k8s.io`; a test pins the chart as a superset of the
+  generated role so the two cannot drift again.
+
+### Security
+
+- `golang.org/x/net` v0.58.0 carried GO-2026-6617 (HTTP/2 HPACK encoder
+  race); it moves to v0.62.0. The Go toolchain moves to 1.26.10 for the
+  stdlib side of the same advisory and GO-2026-6809 (crypto/x509). This is
+  what kept govulncheck red on every open PR.
+
 ## [0.10.2] - 2026-10-06
 
 ### Security
